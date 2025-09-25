@@ -174,86 +174,18 @@ ExportCSV = function()
         csv = csv .. line
     end
 
-    -- Try to write CSV file to WoW directory
-    local success = false
-    local errorMsg = ""
-    
-    -- Try multiple methods to get WoW directory path
-    local wowPath = nil
-    
-    -- Method 1: GetWoWDirectory (if available)
-    if GetWoWDirectory then
-        wowPath = GetWoWDirectory()
+    -- Save CSV data to SavedVariables (WoW addons cannot write files outside the game directory)
+    if not PotionTrackerDB then
+        PotionTrackerDB = {}
     end
+    PotionTrackerDB.exportedCSV = csv
     
-    -- Method 2: Try to get from saved variables path (Classic Era fallback)
-    if not wowPath then
-        -- Try to extract path from saved variables location
-        local svPath = debug.getinfo(1, "S").source
-        if svPath and svPath:find("WTF") then
-            -- Extract the WoW directory from the saved variables path
-            local match = svPath:match("(.*[\\/])WTF")
-            if match then
-                wowPath = match:gsub("[\\/]$", "") -- Remove trailing slash
-            end
-        end
-    end
-    
-    -- Method 3: Try user-accessible directories first
-    if not wowPath then
-        local accessiblePaths = {
-            os.getenv("USERPROFILE") .. "\\Documents",  -- Documents folder
-            os.getenv("USERPROFILE") .. "\\Desktop",    -- Desktop folder
-            "C:\\Program Files (x86)\\World of Warcraft\\_classic_era_",
-            "C:\\Program Files\\World of Warcraft\\_classic_era_",
-            "C:\\Program Files (x86)\\World of Warcraft",
-            "C:\\Program Files\\World of Warcraft"
-        }
-        
-        for _, path in ipairs(accessiblePaths) do
-            if path then
-                -- Test if directory exists by trying to create a test file
-                local testFile = io.open(path .. "\\test_write.tmp", "w")
-                if testFile then
-                    testFile:close()
-                    os.remove(path .. "\\test_write.tmp") -- Clean up test file
-                    wowPath = path
-                    break
-                end
-            end
-        end
-    end
-    
-    if wowPath then
-        -- Create filename with timestamp
-        local timestamp = date("%Y%m%d_%H%M%S")
-        local filename = string.format("PotionTracker_Export_%s.csv", timestamp)
-        local filepath = wowPath .. "\\" .. filename
-        
-        -- Attempt to write the file
-        local file = io.open(filepath, "w")
-        if file then
-            file:write(csv)
-            file:close()
-            success = true
-            Print(string.format("CSV exported successfully to: %s", filepath))
-        else
-            errorMsg = "Could not create file in WoW directory"
-        end
-    else
-        errorMsg = "Could not determine WoW directory"
-    end
-    
-    -- Fallback: save to SavedVariables if file write failed
-    if not success then
-        if not PotionTrackerDB then
-            PotionTrackerDB = {}
-        end
-        PotionTrackerDB.exportedCSV = csv
-        Print(string.format("File export failed (%s). CSV saved to SavedVariables instead.", errorMsg))
-        Print("Data will be saved automatically on logout.")
-        Print("You can find the CSV data in your SavedVariables file after logout.")
-    end
+    Print("CSV data exported to SavedVariables!")
+    Print("To access your CSV data:")
+    Print("1. Use /pt showcsv to display the data in chat")
+    Print("2. Copy the data and save it as a .csv file")
+    Print("3. Or find it in your SavedVariables file after logout")
+    Print("   Location: WTF\\Account\\[AccountName]\\SavedVariables\\PotionTracker.lua")
 end
 
 -- Initialize variables
@@ -1834,13 +1766,27 @@ SlashCmdList["POTIONTRACKER"] = function(msg)
         end
     elseif command == "showcsv" then
         if PotionTrackerDB and PotionTrackerDB.exportedCSV then
-            Print("CSV data found in SavedVariables:")
-            Print("--- START CSV DATA ---")
-            Print(PotionTrackerDB.exportedCSV)
-            Print("--- END CSV DATA ---")
-            Print("Copy the data above and save it as a .csv file")
+            Print("=== POTIONTRACKER CSV EXPORT ===")
+            Print("Copy the data below and save it as a .csv file:")
+            Print("")
+            
+            -- Split CSV into lines and print each one
+            local lines = {}
+            for line in PotionTrackerDB.exportedCSV:gmatch("[^\r\n]+") do
+                table.insert(lines, line)
+            end
+            
+            for i, line in ipairs(lines) do
+                Print(line)
+            end
+            
+            Print("")
+            Print("=== END CSV DATA ===")
+            Print("Total lines: " .. #lines)
+            Print("Save this data as PotionTracker_Export.csv")
         else
-            Print("No CSV data found in SavedVariables. Try running /pt export first.")
+            Print("No CSV data found in SavedVariables.")
+            Print("Run /pt export first to generate CSV data.")
         end
     else
         Print("Unknown command. Type /pt help for options.", "WARN")
