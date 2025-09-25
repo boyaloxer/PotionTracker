@@ -199,23 +199,27 @@ ExportCSV = function()
         end
     end
     
-    -- Method 3: Try common WoW installation paths
+    -- Method 3: Try user-accessible directories first
     if not wowPath then
-        local commonPaths = {
+        local accessiblePaths = {
+            os.getenv("USERPROFILE") .. "\\Documents",  -- Documents folder
+            os.getenv("USERPROFILE") .. "\\Desktop",    -- Desktop folder
             "C:\\Program Files (x86)\\World of Warcraft\\_classic_era_",
             "C:\\Program Files\\World of Warcraft\\_classic_era_",
             "C:\\Program Files (x86)\\World of Warcraft",
             "C:\\Program Files\\World of Warcraft"
         }
         
-        for _, path in ipairs(commonPaths) do
-            -- Test if directory exists by trying to create a test file
-            local testFile = io.open(path .. "\\test_write.tmp", "w")
-            if testFile then
-                testFile:close()
-                os.remove(path .. "\\test_write.tmp") -- Clean up test file
-                wowPath = path
-                break
+        for _, path in ipairs(accessiblePaths) do
+            if path then
+                -- Test if directory exists by trying to create a test file
+                local testFile = io.open(path .. "\\test_write.tmp", "w")
+                if testFile then
+                    testFile:close()
+                    os.remove(path .. "\\test_write.tmp") -- Clean up test file
+                    wowPath = path
+                    break
+                end
             end
         end
     end
