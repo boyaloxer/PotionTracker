@@ -823,33 +823,33 @@ function UI.BuffConfig:Create()
     -- Simple background using a texture instead of backdrop
     local bg = buffConfigFrame:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
-    bg:SetTexture("Interface\DialogFrame\UI-DialogBox-Background")
+    bg:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Background")
     bg:SetVertexColor(0.2, 0.2, 0.2, 0.9) -- Dark gray background
 
     -- Border using multiple textures
     local borderTop = buffConfigFrame:CreateTexture(nil, "BORDER")
-    borderTop:SetTexture("Interface\DialogFrame\UI-DialogBox-Border")
+    borderTop:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Border")
     borderTop:SetPoint("TOPLEFT", -16, 16)
     borderTop:SetPoint("TOPRIGHT", 16, 16)
     borderTop:SetHeight(16)
     borderTop:SetTexCoord(0, 1, 0, 0.25)
 
     local borderBottom = buffConfigFrame:CreateTexture(nil, "BORDER")
-    borderBottom:SetTexture("Interface\DialogFrame\UI-DialogBox-Border")
+    borderBottom:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Border")
     borderBottom:SetPoint("BOTTOMLEFT", -16, -16)
     borderBottom:SetPoint("BOTTOMRIGHT", 16, -16)
     borderBottom:SetHeight(16)
     borderBottom:SetTexCoord(0, 1, 0.75, 1)
 
     local borderLeft = buffConfigFrame:CreateTexture(nil, "BORDER")
-    borderLeft:SetTexture("Interface\DialogFrame\UI-DialogBox-Border")
+    borderLeft:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Border")
     borderLeft:SetPoint("TOPLEFT", -16, 16)
     borderLeft:SetPoint("BOTTOMLEFT", -16, -16)
     borderLeft:SetWidth(16)
     borderLeft:SetTexCoord(0, 0.25, 0, 1)
 
     local borderRight = buffConfigFrame:CreateTexture(nil, "BORDER")
-    borderRight:SetTexture("Interface\DialogFrame\UI-DialogBox-Border")
+    borderRight:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Border")
     borderRight:SetPoint("TOPRIGHT", 16, 16)
     borderRight:SetPoint("BOTTOMRIGHT", 16, -16)
     borderRight:SetWidth(16)
@@ -898,12 +898,12 @@ function UI.BuffConfig:Create()
         checkbox:SetSize(24, 24)
 
         local normal = checkbox:CreateTexture(nil, "ARTWORK")
-        normal:SetTexture("Interface\Buttons\UI-CheckBox-Up")
+        normal:SetTexture("Interface\\Buttons\\UI-CheckBox-Up")
         normal:SetAllPoints()
         checkbox:SetNormalTexture(normal)
 
         local checked = checkbox:CreateTexture(nil, "ARTWORK")
-        checked:SetTexture("Interface\Buttons\UI-CheckBox-Check")
+        checked:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
         checked:SetAllPoints()
         checkbox:SetCheckedTexture(checked)
 
