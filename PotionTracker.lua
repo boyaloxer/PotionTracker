@@ -63,6 +63,12 @@ local function Debug(msg)
     end
 end
 
+local UI = {
+    Minimap = {},
+    Options = {},
+    BuffConfig = {},
+}
+
 -- Helper function to get table size
 GetTableSize = function(t)
     local count = 0
@@ -169,7 +175,7 @@ local previousBuffs = {}
 local dropDown = nil  -- Move dropDown to global scope
 local optionsPanel = nil
 
-local MINIMAP_SHAPE_FALLBACKS = {
+UI.Minimap.shapeFallbacks = {
     ROUND = { true, true, true, true },
     SQUARE = { false, false, false, false },
 }
@@ -191,7 +197,6 @@ end
 -- Forward declarations
 local InitializeAllUnits
 local UpdateOptionsPanel
-local CreateOptionsPanel
 
 local DEFAULT_HISTORY_LIMIT = 1000
 local MIN_HISTORY_LIMIT = 100
@@ -262,9 +267,6 @@ local function ToggleTracking()
 
     if isTracking then
         Print("Tracking started")
-        if minimapIcon and minimapIcon.texture then
-            minimapIcon.texture:SetDesaturated(false)
-        end
 
         -- Reset cached buff state and scan current units so we don't miss existing buffs
         previousBuffs = {}
@@ -273,19 +275,17 @@ local function ToggleTracking()
         InitializeAllUnits()
     else
         Print("Tracking stopped")
-        if minimapIcon and minimapIcon.texture then
-            minimapIcon.texture:SetDesaturated(true)
-        end
         ResetCombatState()
     end
 
+    UI.Minimap:UpdateIconState()
     UpdateOptionsPanel()
 end
 
 -- Create dropdown menu
-local function InitializeMenu(frame, level, menuList)
+function UI.Minimap:InitializeMenu(frame, level, menuList)
     local info = UIDropDownMenu_CreateInfo()
-    
+
     info.text = "PotionTracker Options"
     info.isTitle = true
     info.notCheckable = true
@@ -296,7 +296,7 @@ local function InitializeMenu(frame, level, menuList)
     info.text = "Configure Buffs"
     info.func = function()
         Debug("Configure Buffs clicked")
-        ShowBuffConfigFrame()
+        UI.BuffConfig:Show()
     end
     UIDropDownMenu_AddButton(info, level)
     
@@ -332,7 +332,11 @@ local function InitializeMenu(frame, level, menuList)
 end
 
 -- Function to create minimap icon
-local function CreateMinimapIcon()
+function UI.Minimap:Create()
+    if self.frame then
+        return self.frame
+    end
+
     local frame = CreateFrame("Button", "PotionTrackerMinimapIcon", Minimap)
     frame:SetFrameStrata("MEDIUM")
     frame:EnableMouse(true)
@@ -363,7 +367,9 @@ local function CreateMinimapIcon()
     if not dropDown then
         dropDown = CreateFrame("Frame", "PotionTrackerDropDownMenu", UIParent, "UIDropDownMenuTemplate")
     end
-    UIDropDownMenu_Initialize(dropDown, InitializeMenu)
+    UIDropDownMenu_Initialize(dropDown, function(...)
+        UI.Minimap:InitializeMenu(...)
+    end)
     
     frame:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     frame:RegisterForDrag("LeftButton")
@@ -375,8 +381,8 @@ local function CreateMinimapIcon()
         local sinAngle = math.sin(angle)
         local minimapShape = GetMinimapShape and GetMinimapShape() or "ROUND"
         local quadTable = (MinimapShapes and MinimapShapes[minimapShape])
-            or MINIMAP_SHAPE_FALLBACKS[minimapShape]
-            or MINIMAP_SHAPE_FALLBACKS.ROUND
+            or UI.Minimap.shapeFallbacks[minimapShape]
+            or UI.Minimap.shapeFallbacks.ROUND
 
         local quadrant = 1
         if cosAngle < 0 then
@@ -469,10 +475,11 @@ local function CreateMinimapIcon()
 
     frame:SetScript("OnShow", UpdatePosition)
 
+    self.frame = frame
     return frame
 end
 
-local function CreateOptionsPanel()
+function UI.Options:Create()
     if optionsPanel then
         return optionsPanel
     end
@@ -514,7 +521,9 @@ local function CreateOptionsPanel()
     AnchorBelow(configButton, trackingCheckbox, SECTION_SPACING)
     configButton:SetSize(220, 24)
     configButton:SetText("Configure tracked buffs...")
-    configButton:SetScript("OnClick", ShowBuffConfigFrame)
+    configButton:SetScript("OnClick", function()
+        UI.BuffConfig:Show()
+    end)
     optionsPanel.configButton = configButton
 
     local exportButton = CreateFrame("Button", nil, optionsPanel, "UIPanelButtonTemplate")
@@ -557,6 +566,17 @@ local function CreateOptionsPanel()
             self.Text:SetText("Max history entries: " .. limit)
         end
     end)
+    historySlider:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText(
+            "Controls how many buff events PotionTracker keeps in memory for exports and review.",
+            1, 1, 1,
+            true
+        )
+        GameTooltip:AddLine("Higher values provide longer history but may use more memory.", 0.8, 0.8, 0.8, true)
+        GameTooltip:Show()
+    end)
+    historySlider:SetScript("OnLeave", GameTooltip_Hide)
     optionsPanel.historySlider = historySlider
 
     local logLabel = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
@@ -587,6 +607,17 @@ local function CreateOptionsPanel()
         end
     end)
 
+    local logDropdownButton = _G[logDropdown:GetName() .. "Button"]
+    if logDropdownButton then
+        logDropdownButton:HookScript("OnEnter", function(button)
+            GameTooltip:SetOwner(button, "ANCHOR_RIGHT")
+            GameTooltip:SetText("Select the minimum severity that will be printed to chat.", 1, 1, 1, true)
+            GameTooltip:AddLine("DEBUG shows everything, while ERROR only reports critical issues.", 0.8, 0.8, 0.8, true)
+            GameTooltip:Show()
+        end)
+        logDropdownButton:HookScript("OnLeave", GameTooltip_Hide)
+    end
+
     if InterfaceOptions_AddCategory then
         InterfaceOptions_AddCategory(optionsPanel)
     end
@@ -601,6 +632,7 @@ local function CreateOptionsPanel()
         UpdateOptionsPanel()
     end
 
+    self.frame = optionsPanel
     return optionsPanel
 end
 
@@ -700,8 +732,51 @@ end
 -- Buff configuration frame
 local buffConfigFrame = nil
 
+function UI.BuffConfig:ApplySavedPosition()
+    if not buffConfigFrame then
+        return
+    end
+
+    local position = PotionTrackerDB and PotionTrackerDB.buffConfigPosition
+    if position and position.point then
+        buffConfigFrame:ClearAllPoints()
+        buffConfigFrame:SetPoint(
+            position.point,
+            UIParent,
+            position.relativePoint or position.point,
+            position.x or 0,
+            position.y or 0
+        )
+    else
+        buffConfigFrame:ClearAllPoints()
+        buffConfigFrame:SetPoint("CENTER")
+    end
+end
+
+function UI.BuffConfig:PersistPosition()
+    if not buffConfigFrame or not buffConfigFrame:GetPoint() then
+        return
+    end
+
+    local point, _, relativePoint, xOffset, yOffset = buffConfigFrame:GetPoint(1)
+    if not point then
+        return
+    end
+
+    if not PotionTrackerDB then
+        PotionTrackerDB = {}
+    end
+
+    PotionTrackerDB.buffConfigPosition = {
+        point = point,
+        relativePoint = relativePoint,
+        x = math.floor(xOffset + 0.5),
+        y = math.floor(yOffset + 0.5),
+    }
+end
+
 -- Function to create buff configuration frame (made global for access)
-CreateBuffConfigFrame = function()
+function UI.BuffConfig:Create()
     Debug("CreateBuffConfigFrame called")
 
     if buffConfigFrame then
@@ -713,7 +788,7 @@ CreateBuffConfigFrame = function()
 
     -- Basic frame setup
     buffConfigFrame:SetSize(400, 500)
-    buffConfigFrame:SetPoint("CENTER")
+    self:ApplySavedPosition()
     buffConfigFrame:SetFrameStrata("HIGH")
     buffConfigFrame:SetFrameLevel(1000)
     buffConfigFrame:SetMovable(true)
@@ -730,6 +805,7 @@ CreateBuffConfigFrame = function()
         if self.StopMovingOrSizing then
             self:StopMovingOrSizing()
         end
+        UI.BuffConfig:PersistPosition()
     end)
 
     -- Simple background using a texture instead of backdrop
@@ -944,20 +1020,24 @@ CreateBuffConfigFrame = function()
     UpdateChangeState("No pending changes", 0.7, 0.9, 0.7)
 
     Debug("Buff config frame creation completed")
+    self.frame = buffConfigFrame
     return buffConfigFrame
 end
-ShowBuffConfigFrame = function()
+
+function UI.BuffConfig:Show()
     Debug("ShowBuffConfigFrame called")
 
     if not buffConfigFrame then
         Debug("Creating buff config frame")
-        CreateBuffConfigFrame()
+        self:Create()
     end
 
     if not buffConfigFrame then
         Print("Failed to create buff configuration frame", "ERROR")
         return
     end
+
+    self:ApplySavedPosition()
 
     Debug("Buff config frame exists, showing")
     
@@ -1233,7 +1313,7 @@ local function CheckNewBuffs(unit)
 end
 
 -- Function to check appropriate units based on group state
-local function UpdateOptionsPanel()
+function UI.Options:Refresh()
     if not optionsPanel then return end
 
     if optionsPanel.enableTrackingCheckbox then
@@ -1258,6 +1338,26 @@ local function UpdateOptionsPanel()
     end
 end
 
+local function UpdateOptionsPanel()
+    UI.Options:Refresh()
+end
+
+local function OpenOptionsInterface()
+    local panel = UI.Options:Create()
+    if InterfaceOptionsFrame_OpenToCategory and panel then
+        InterfaceOptionsFrame_OpenToCategory(panel)
+        InterfaceOptionsFrame_OpenToCategory(panel)
+        return
+    end
+
+    if Settings and Settings.OpenToCategory and panel and panel.name then
+        Settings.OpenToCategory(panel.name)
+        return
+    end
+
+    UI.BuffConfig:Show()
+end
+
 local function CheckAppropriateUnits(unit)
     -- Always check if it's the player
     if unit == "player" then
@@ -1280,7 +1380,7 @@ local function CheckAppropriateUnits(unit)
 end
 
 -- Function to update icon appearance
-local function UpdateIconState()
+function UI.Minimap:UpdateIconState()
     if not minimapIcon then return end
     if isTracking then
         minimapIcon.texture:SetDesaturated(false)
@@ -1510,14 +1610,14 @@ f:SetScript("OnEvent", function(self, event, ...)
         LoadTrackedBuffs()
         
         -- Create minimap icon
-        minimapIcon = CreateMinimapIcon()
+        minimapIcon = UI.Minimap:Create()
 
         -- Set initial tracking state
         isTracking = PotionTrackerDB.isTracking
-        UpdateIconState()
+        UI.Minimap:UpdateIconState()
 
         -- Create Interface Options panel for easier access
-        CreateOptionsPanel()
+        UI.Options:Create()
         UpdateOptionsPanel()
         
         -- Initialize buff tracking if it was enabled
@@ -1606,6 +1706,7 @@ end)
 
 -- Slash command
 SLASH_POTIONTRACKER1 = "/pt"
+SLASH_POTIONTRACKER2 = "/potiontracker"
 SlashCmdList["POTIONTRACKER"] = function(msg)
     msg = msg or ""
     msg = strtrim(msg)
@@ -1617,6 +1718,7 @@ SlashCmdList["POTIONTRACKER"] = function(msg)
         Print("Commands:")
         Print("/pt toggle - Toggle buff tracking")
         Print("/pt config - Configure tracked buffs")
+        Print("/pt options - Open addon options (falls back to buff list)")
         Print("/pt export - Export buff history (saves on logout)")
         Print("/pt clear - Clear buff history without reloading")
         Print("/pt stats - Show tracking statistics")
@@ -1630,7 +1732,9 @@ SlashCmdList["POTIONTRACKER"] = function(msg)
         ToggleTracking()
     elseif command == "config" or command == "buffs" then
         Debug("Slash command: config")
-        ShowBuffConfigFrame()
+        UI.BuffConfig:Show()
+    elseif command == "options" or command == "settings" then
+        OpenOptionsInterface()
     elseif command == "export" then
         ExportCSV()
         Debug("Slash command: export")
