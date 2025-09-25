@@ -63,6 +63,18 @@ local function Debug(msg)
     end
 end
 
+local function WithBackdrop(template)
+    if not template or template == "" then
+        return template
+    end
+
+    if BackdropTemplateMixin then
+        return string.format("%s,BackdropTemplate", template)
+    end
+
+    return template
+end
+
 local UI = {
     Minimap = {},
     Options = {},
@@ -365,7 +377,7 @@ function UI.Minimap:Create()
     
     -- Create the dropdown menu
     if not dropDown then
-        dropDown = CreateFrame("Frame", "PotionTrackerDropDownMenu", UIParent, "UIDropDownMenuTemplate")
+        dropDown = CreateFrame("Frame", "PotionTrackerDropDownMenu", UIParent, WithBackdrop("UIDropDownMenuTemplate"))
     end
     UIDropDownMenu_Initialize(dropDown, function(...)
         UI.Minimap:InitializeMenu(...)
@@ -505,7 +517,7 @@ function UI.Options:Create()
     description:SetJustifyH("LEFT")
     description:SetText("Adjust tracking, retention and logging without using the minimap button.")
 
-    local trackingCheckbox = CreateFrame("CheckButton", "PotionTrackerOptionsEnableTracking", optionsPanel, "InterfaceOptionsCheckButtonTemplate")
+    local trackingCheckbox = CreateFrame("CheckButton", "PotionTrackerOptionsEnableTracking", optionsPanel, WithBackdrop("InterfaceOptionsCheckButtonTemplate"))
     AnchorBelow(trackingCheckbox, description, SECTION_SPACING)
     trackingCheckbox.Text:SetText("Enable buff tracking")
     trackingCheckbox:SetScript("OnClick", function(self)
@@ -517,7 +529,7 @@ function UI.Options:Create()
     end)
     optionsPanel.enableTrackingCheckbox = trackingCheckbox
 
-    local configButton = CreateFrame("Button", nil, optionsPanel, "UIPanelButtonTemplate")
+    local configButton = CreateFrame("Button", nil, optionsPanel, WithBackdrop("UIPanelButtonTemplate"))
     AnchorBelow(configButton, trackingCheckbox, SECTION_SPACING)
     configButton:SetSize(220, 24)
     configButton:SetText("Configure tracked buffs...")
@@ -526,7 +538,7 @@ function UI.Options:Create()
     end)
     optionsPanel.configButton = configButton
 
-    local exportButton = CreateFrame("Button", nil, optionsPanel, "UIPanelButtonTemplate")
+    local exportButton = CreateFrame("Button", nil, optionsPanel, WithBackdrop("UIPanelButtonTemplate"))
     AnchorBelow(exportButton, configButton, LINE_SPACING)
     exportButton:SetSize(220, 24)
     exportButton:SetText("Export history to CSV")
@@ -537,7 +549,7 @@ function UI.Options:Create()
     AnchorBelow(historyLabel, exportButton, SECTION_SPACING)
     historyLabel:SetText("History retention")
 
-    local historySlider = CreateFrame("Slider", "PotionTrackerHistoryLimitSlider", optionsPanel, "OptionsSliderTemplate")
+    local historySlider = CreateFrame("Slider", "PotionTrackerHistoryLimitSlider", optionsPanel, WithBackdrop("OptionsSliderTemplate"))
     AnchorBelow(historySlider, historyLabel, LINE_SPACING)
     historySlider:SetMinMaxValues(MIN_HISTORY_LIMIT, MAX_HISTORY_LIMIT)
     historySlider:SetValueStep(50)
@@ -583,7 +595,7 @@ function UI.Options:Create()
     AnchorBelow(logLabel, historySlider, SECTION_SPACING)
     logLabel:SetText("Log verbosity")
 
-    local logDropdown = CreateFrame("Frame", "PotionTrackerLogLevelDropdown", optionsPanel, "UIDropDownMenuTemplate")
+    local logDropdown = CreateFrame("Frame", "PotionTrackerLogLevelDropdown", optionsPanel, WithBackdrop("UIDropDownMenuTemplate"))
     AnchorBelow(logDropdown, logLabel, LINE_SPACING, -16)
     local logLevels = { "ERROR", "WARN", "INFO", "DEBUG" }
     optionsPanel.logLevelDropdown = logDropdown
@@ -857,7 +869,7 @@ function UI.BuffConfig:Create()
     end)
 
     -- Scrollable buff list
-    local scrollFrame = CreateFrame("ScrollFrame", "PotionTrackerBuffScrollFrame", buffConfigFrame, "UIPanelScrollFrameTemplate")
+    local scrollFrame = CreateFrame("ScrollFrame", "PotionTrackerBuffScrollFrame", buffConfigFrame, WithBackdrop("UIPanelScrollFrameTemplate"))
     scrollFrame:SetPoint("TOPLEFT", 20, -60)
     scrollFrame:SetPoint("BOTTOMRIGHT", -45, 90)
 
@@ -929,12 +941,12 @@ function UI.BuffConfig:Create()
     statusText:SetJustifyH("CENTER")
 
     -- Save and reset buttons
-    local saveButton = CreateFrame("Button", nil, buffConfigFrame, "UIPanelButtonTemplate")
+    local saveButton = CreateFrame("Button", nil, buffConfigFrame, WithBackdrop("UIPanelButtonTemplate"))
     saveButton:SetSize(120, 26)
     saveButton:SetPoint("BOTTOMLEFT", 20, 20)
     saveButton:SetText("Save")
 
-    local resetButton = CreateFrame("Button", nil, buffConfigFrame, "UIPanelButtonTemplate")
+    local resetButton = CreateFrame("Button", nil, buffConfigFrame, WithBackdrop("UIPanelButtonTemplate"))
     resetButton:SetSize(120, 26)
     resetButton:SetPoint("BOTTOMRIGHT", -20, 20)
     resetButton:SetText("Reset")
