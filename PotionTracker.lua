@@ -8,9 +8,59 @@ f:RegisterEvent("PLAYER_REGEN_ENABLED")   -- Leaving combat
 f:RegisterEvent("PLAYER_TARGET_CHANGED")  -- Target changed
 f:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")  -- Add combat log event
 
--- Function to print messages (moved outside local scope)
-Print = function(msg)
-    DEFAULT_CHAT_FRAME:AddMessage("|cFF00FF00PotionTracker|r: " .. msg)
+local LOG_LEVELS = {
+    ERROR = 1,
+    WARN = 2,
+    INFO = 3,
+    DEBUG = 4,
+}
+
+local activeLogLevel = "INFO"
+
+local function NormalizeLogLevel(level)
+    if type(level) ~= "string" then
+        return nil
+    end
+
+    local normalized = string.upper(level)
+    if LOG_LEVELS[normalized] then
+        return normalized
+    end
+
+    return nil
+end
+
+local function ShouldLog(level)
+    local normalized = NormalizeLogLevel(level) or "INFO"
+    local currentLevelValue = LOG_LEVELS[activeLogLevel] or LOG_LEVELS.INFO
+    return LOG_LEVELS[normalized] <= currentLevelValue
+end
+
+local function SetActiveLogLevel(level)
+    local normalized = NormalizeLogLevel(level)
+    if not normalized then
+        return false
+    end
+
+    activeLogLevel = normalized
+    if PotionTrackerDB then
+        PotionTrackerDB.logLevel = normalized
+    end
+    return true
+end
+
+-- Function to print messages with log levels
+Print = function(msg, level)
+    local normalized = NormalizeLogLevel(level) or "INFO"
+    if ShouldLog(normalized) then
+        DEFAULT_CHAT_FRAME:AddMessage(string.format("|cFF00FF00PotionTracker|r [%s]: %s", normalized, msg))
+    end
+end
+
+local function Debug(msg)
+    if ShouldLog("DEBUG") then
+        Print(msg, "DEBUG")
+    end
 end
 
 -- Helper function to get table size
@@ -88,12 +138,15 @@ local function ToggleTracking()
 
         -- Reset cached buff state and scan current units so we don't miss existing buffs
         previousBuffs = {}
+        lastUnitUpdate = {}
+        ResetCombatState()
         InitializeAllUnits()
     else
         Print("Tracking stopped")
         if minimapIcon and minimapIcon.texture then
             minimapIcon.texture:SetDesaturated(true)
         end
+        ResetCombatState()
     end
 end
 
@@ -110,7 +163,7 @@ local function InitializeMenu(frame, level, menuList)
     info.notCheckable = true
     info.text = "Configure Buffs"
     info.func = function()
-        Print("Configure Buffs clicked!")
+        Debug("Configure Buffs clicked")
         ShowBuffConfigFrame()
     end
     UIDropDownMenu_AddButton(info, level)
@@ -120,7 +173,7 @@ local function InitializeMenu(frame, level, menuList)
     info.text = "Export Data"
     info.func = function()
         ExportCSV()
-        Print("Export complete. Logout to persist immediately if desired.")
+        Debug("Export menu option selected")
     end
     UIDropDownMenu_AddButton(info, level)
 
@@ -260,43 +313,97 @@ local function CreateMinimapIcon()
     return frame
 end
 
--- Available buffs for tracking (spell ID -> display name)
+-- Available buffs for tracking (spell ID -> metadata)
 local availableBuffs = {
     -- Protection Potions
-    [17543] = "Greater Fire Protection",
-    [17549] = "Greater Arcane Protection", 
-    [17548] = "Greater Shadow Protection",
-    [17544] = "Greater Nature Protection",
-    [17545] = "Greater Frost Protection",
-    
-    -- Other Potions
-    [11359] = "Greater Restoration",
-    [6615] = "Free Action",
+    [17543] = { name = "Greater Fire Protection", category = "Protection Potions" },
+    [17549] = { name = "Greater Arcane Protection", category = "Protection Potions" },
+    [17548] = { name = "Greater Shadow Protection", category = "Protection Potions" },
+    [17544] = { name = "Greater Nature Protection", category = "Protection Potions" },
+    [17545] = { name = "Greater Frost Protection", category = "Protection Potions" },
+    [28511] = { name = "Elixir of Major Firepower", category = "Battle Elixirs" },
+
+    -- Defensive Potions
+    [17540] = { name = "Greater Stoneshield Potion", category = "Defensive Potions" },
+    [17537] = { name = "Elixir of Brute Force", category = "Battle Elixirs" },
+
+    -- Utility Potions
+    [11359] = { name = "Restoration Potion", category = "Utility Potions" },
+    [6615] = { name = "Free Action Potion", category = "Utility Potions" },
+    [15753] = { name = "Limited Invulnerability", category = "Utility Potions" },
+
+    -- Flasks
+    [17626] = { name = "Flask of the Titans", category = "Flasks" },
+    [17627] = { name = "Flask of Supreme Power", category = "Flasks" },
+    [17628] = { name = "Flask of Distilled Wisdom", category = "Flasks" },
+    [17629] = { name = "Flask of Chromatic Resistance", category = "Flasks" },
+}
+
+local defaultTrackedBuffs = {
+    [17543] = true,
+    [17549] = true,
+    [17548] = true,
+    [17544] = false,
+    [17545] = false,
+    [17540] = true,
+    [11359] = true,
+    [6615] = true,
 }
 
 -- Currently tracked buffs (populated from saved variables)
 local trackedBuffs = {}
 
+local function BuildSortedBuffList()
+    local list = {}
+    for spellId, buff in pairs(availableBuffs) do
+        table.insert(list, {
+            spellId = spellId,
+            name = buff.name,
+            category = buff.category or "Other Buffs",
+        })
+    end
+
+    table.sort(list, function(a, b)
+        if a.category == b.category then
+            if a.name == b.name then
+                return a.spellId < b.spellId
+            end
+            return a.name < b.name
+        end
+        return a.category < b.category
+    end)
+
+    return list
+end
+
+local function GetDefaultBuffState(spellId)
+    if defaultTrackedBuffs[spellId] ~= nil then
+        return defaultTrackedBuffs[spellId]
+    end
+    return false
+end
+
 -- Function to load tracked buffs from saved variables
 local function LoadTrackedBuffs()
-    Print("LoadTrackedBuffs called!")
+    Debug("LoadTrackedBuffs called")
     trackedBuffs = {}
-    
+
     if PotionTrackerDB and PotionTrackerDB.trackedBuffs then
-        Print("Loading from PotionTrackerDB.trackedBuffs...")
+        Debug("Loading from PotionTrackerDB.trackedBuffs")
         for spellId, enabled in pairs(PotionTrackerDB.trackedBuffs) do
-            Print(string.format("  Spell ID %d: enabled=%s, available=%s", 
-                spellId, tostring(enabled), tostring(availableBuffs[spellId] ~= nil)))
-            if enabled and availableBuffs[spellId] then
-                trackedBuffs[spellId] = availableBuffs[spellId]
-                Print(string.format("  Added %s to trackedBuffs", availableBuffs[spellId]))
+            local buffInfo = availableBuffs[spellId]
+            Debug(string.format("Spell ID %d: enabled=%s, available=%s",
+                spellId, tostring(enabled), tostring(buffInfo ~= nil)))
+            if enabled and buffInfo then
+                trackedBuffs[spellId] = buffInfo.name
+                Debug(string.format("Added %s to trackedBuffs", buffInfo.name))
             end
         end
     else
-        Print("No PotionTrackerDB.trackedBuffs found!")
+        Debug("No PotionTrackerDB.trackedBuffs found")
     end
-    
-    Print(string.format("Loaded %d tracked buffs", GetTableSize(trackedBuffs)))
+
+    Debug(string.format("Loaded %d tracked buffs", GetTableSize(trackedBuffs)))
 end
 
 -- Buff configuration frame
@@ -304,18 +411,15 @@ local buffConfigFrame = nil
 
 -- Function to create buff configuration frame (made global for access)
 CreateBuffConfigFrame = function()
-    Print("CreateBuffConfigFrame called!")
-    
+    Debug("CreateBuffConfigFrame called")
+
     if buffConfigFrame then
-        Print("Buff config frame already exists, returning it")
+        Debug("Buff config frame already exists")
         return buffConfigFrame
     end
-    
-    Print("Creating new buff config frame...")
-    
+
     -- Create main frame - SIMPLIFIED for Classic Era compatibility
     buffConfigFrame = CreateFrame("Frame", "PotionTrackerBuffConfigFrame", UIParent)
-    Print("Frame created: " .. tostring(buffConfigFrame ~= nil))
     
     -- Basic frame setup
     buffConfigFrame:SetSize(400, 500)
@@ -385,46 +489,69 @@ CreateBuffConfigFrame = function()
         buffConfigFrame:Hide()
     end)
     
-    -- Create buff checkboxes
-    local yOffset = -60
+    -- Scrollable buff list
+    local scrollFrame = CreateFrame("ScrollFrame", "PotionTrackerBuffScrollFrame", buffConfigFrame, "UIPanelScrollFrameTemplate")
+    scrollFrame:SetPoint("TOPLEFT", 20, -60)
+    scrollFrame:SetPoint("BOTTOMRIGHT", -45, 60)
+
+    local content = CreateFrame("Frame", nil, scrollFrame)
+    content:SetSize(1, 1)
+    scrollFrame:SetScrollChild(content)
+
+    local sortedBuffs = BuildSortedBuffList()
+    local yOffset = 0
+    local currentCategory = nil
     local checkboxes = {}
-    
-    for spellId, buffName in pairs(availableBuffs) do
-        -- Simple checkbox using basic textures
-        local checkbox = CreateFrame("CheckButton", nil, buffConfigFrame)
-        checkbox:SetPoint("TOPLEFT", 20, yOffset)
+
+    for _, buff in ipairs(sortedBuffs) do
+        if buff.category ~= currentCategory then
+            currentCategory = buff.category
+            local header = content:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+            header:SetPoint("TOPLEFT", 0, yOffset)
+            header:SetText(currentCategory)
+            header:SetTextColor(1, 0.82, 0)
+            header:SetJustifyH("LEFT")
+            yOffset = yOffset - 20
+        end
+
+        local checkbox = CreateFrame("CheckButton", nil, content)
+        checkbox:SetPoint("TOPLEFT", 0, yOffset)
         checkbox:SetSize(24, 24)
-        
-        -- Checkbox textures
+
         local normal = checkbox:CreateTexture(nil, "ARTWORK")
         normal:SetTexture("Interface\\Buttons\\UI-CheckBox-Up")
         normal:SetAllPoints()
         checkbox:SetNormalTexture(normal)
-        
+
         local checked = checkbox:CreateTexture(nil, "ARTWORK")
         checked:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
         checked:SetAllPoints()
         checkbox:SetCheckedTexture(checked)
-        
-        -- Set initial state
-        if PotionTrackerDB and PotionTrackerDB.trackedBuffs and PotionTrackerDB.trackedBuffs[spellId] then
-            checkbox:SetChecked(PotionTrackerDB.trackedBuffs[spellId])
-        else
-            checkbox:SetChecked(false)
+
+        local isChecked = GetDefaultBuffState(buff.spellId)
+        if PotionTrackerDB and PotionTrackerDB.trackedBuffs then
+            local savedValue = PotionTrackerDB.trackedBuffs[buff.spellId]
+            if savedValue ~= nil then
+                isChecked = savedValue
+            end
         end
-        
-        -- Buff name label
-        local label = buffConfigFrame:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+        checkbox:SetChecked(isChecked)
+
+        local label = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
         label:SetPoint("LEFT", checkbox, "RIGHT", 10, 0)
-        label:SetText(buffName)
-        label:SetTextColor(1, 1, 1, 1) -- White text
-        
-        -- Store reference
-        checkboxes[spellId] = checkbox
-        
-        yOffset = yOffset - 35
+        label:SetText(buff.name)
+        label:SetJustifyH("LEFT")
+        label:SetTextColor(1, 1, 1, 1)
+        label:SetWidth(250)
+        label:SetWordWrap(false)
+
+        checkboxes[buff.spellId] = checkbox
+        yOffset = yOffset - 28
     end
-    
+
+    content:SetWidth(280)
+    content:SetHeight(math.max(1, -yOffset))
+
     -- Store checkboxes for later use
     buffConfigFrame.checkboxes = checkboxes
     
@@ -472,50 +599,50 @@ CreateBuffConfigFrame = function()
     resetButton:SetScript("OnClick", function()
         -- Reset to defaults
         for spellId, checkbox in pairs(checkboxes) do
-            local defaultValue = (spellId == 11359 or spellId == 6615 or spellId == 17543 or 
-                                 spellId == 17549 or spellId == 17548) -- Default enabled buffs
-            checkbox:SetChecked(defaultValue)
+            checkbox:SetChecked(GetDefaultBuffState(spellId))
         end
     end)
     
     -- Show the frame immediately
     buffConfigFrame:Show()
     
-    Print("Buff config frame creation completed!")
-    Print("Frame should now be visible with dark background and white text")
+    Debug("Buff config frame creation completed")
     return buffConfigFrame
 end
 
 -- Function to show buff configuration frame (made global for dropdown access)
 ShowBuffConfigFrame = function()
-    Print("ShowBuffConfigFrame called!")
-    
+    Debug("ShowBuffConfigFrame called")
+
     if not buffConfigFrame then
-        Print("Creating buff config frame...")
+        Debug("Creating buff config frame")
         CreateBuffConfigFrame()
     end
-    
+
     if not buffConfigFrame then
-        Print("ERROR: Failed to create buff config frame!")
+        Print("Failed to create buff configuration frame", "ERROR")
         return
     end
-    
-    Print("Buff config frame exists, showing...")
+
+    Debug("Buff config frame exists, showing")
     
     -- Update checkbox states from current settings
     if PotionTrackerDB and PotionTrackerDB.trackedBuffs and buffConfigFrame.checkboxes then
         for spellId, checkbox in pairs(buffConfigFrame.checkboxes) do
-            checkbox:SetChecked(PotionTrackerDB.trackedBuffs[spellId] or false)
+            local saved = PotionTrackerDB.trackedBuffs[spellId]
+            if saved == nil then
+                checkbox:SetChecked(GetDefaultBuffState(spellId))
+            else
+                checkbox:SetChecked(saved)
+            end
         end
     end
     
     -- Show the frame
     buffConfigFrame:Show()
     
-    Print("Buff config frame should now be visible!")
-    Print("Frame exists: " .. tostring(buffConfigFrame ~= nil))
-    Print("Frame is shown: " .. tostring(buffConfigFrame:IsShown()))
-    Print("Frame is visible: " .. tostring(buffConfigFrame:IsVisible()))
+    Debug("Buff config frame should now be visible")
+    Print("Buff configuration window opened")
 end
 
 -- Table of tracked mobs/bosses
@@ -544,10 +671,71 @@ local trackedMobs = {
     ["Flamegor"] = true,
     ["Chromaggus"] = true,
     ["Nefarian"] = true,
+
+    -- Zul'Gurub
+    ["High Priest Venoxis"] = true,
+    ["High Priestess Jeklik"] = true,
+    ["High Priestess Mar'li"] = true,
+    ["High Priest Thekal"] = true,
+    ["High Priestess Arlokk"] = true,
+    ["Bloodlord Mandokir"] = true,
+    ["Jin'do the Hexxer"] = true,
+    ["Gahz'ranka"] = true,
+    ["Hakkar"] = true,
+
+    -- Ruins of Ahn'Qiraj
+    ["Kurinnaxx"] = true,
+    ["General Rajaxx"] = true,
+    ["Moam"] = true,
+    ["Buru the Gorger"] = true,
+    ["Ayamiss the Hunter"] = true,
+    ["Ossirian the Unscarred"] = true,
+
+    -- Temple of Ahn'Qiraj
+    ["The Prophet Skeram"] = true,
+    ["Lord Kri"] = true,
+    ["Princess Yauj"] = true,
+    ["Vem"] = true,
+    ["Battleguard Sartura"] = true,
+    ["Fankriss the Unyielding"] = true,
+    ["Viscidus"] = true,
+    ["Princess Huhuran"] = true,
+    ["Emperor Vek'lor"] = true,
+    ["Emperor Vek'nilash"] = true,
+    ["Ouro"] = true,
+    ["C'Thun"] = true,
+
+    -- Naxxramas
+    ["Anub'Rekhan"] = true,
+    ["Grand Widow Faerlina"] = true,
+    ["Maexxna"] = true,
+    ["Noth the Plaguebringer"] = true,
+    ["Heigan the Unclean"] = true,
+    ["Loatheb"] = true,
+    ["Instructor Razuvious"] = true,
+    ["Gothik the Harvester"] = true,
+    ["Thane Korth'azz"] = true,
+    ["Lady Blaumeux"] = true,
+    ["Sir Zeliek"] = true,
+    ["Baron Rivendare"] = true,
+    ["Patchwerk"] = true,
+    ["Grobbulus"] = true,
+    ["Gluth"] = true,
+    ["Thaddius"] = true,
+    ["Sapphiron"] = true,
+    ["Kel'Thuzad"] = true,
+
+    -- World bosses
+    ["Azuregos"] = true,
+    ["Lord Kazzak"] = true,
+    ["Emeriss"] = true,
+    ["Lethon"] = true,
+    ["Taerar"] = true,
+    ["Ysondre"] = true,
 }
 
 -- Throttle for buff updates (prevent spam)
-local lastUpdate = 0
+local lastUnitUpdate = {}
 local UPDATE_THROTTLE = 0.05 -- seconds
 
 -- Function to get unit's tracked buffs (optimized)
@@ -573,27 +761,29 @@ end
 
 -- Function to initialize buff tracking for a unit
 local function InitializeUnitBuffs(unit)
-    if not UnitExists(unit) then 
-        Print("Unit does not exist: " .. tostring(unit))
-        return 
-    end
-    
-    local unitName = UnitName(unit)
-    if not unitName then 
-        Print("Could not get unit name for: " .. tostring(unit))
-        return 
+    if not UnitExists(unit) then
+        Debug("Unit does not exist: " .. tostring(unit))
+        return
     end
 
-    Print("Checking buffs for " .. unitName)
-    
+    local unitName = UnitName(unit)
+    if not unitName then
+        Debug("Could not get unit name for: " .. tostring(unit))
+        return
+    end
+
+    Debug("Checking buffs for " .. unitName)
+
+    lastUnitUpdate[unit] = 0
+
     -- Check each tracked buff directly
     for spellId, buffName in pairs(trackedBuffs) do
         local auraName = GetSpellInfo(spellId) or buffName
-        Print("Checking for buff: " .. tostring(auraName))
+        Debug("Checking for buff: " .. tostring(auraName))
         local name, _, _, _, duration = AuraUtil.FindAuraByName(auraName, unit, "HELPFUL")
         if name then
-            Print("Found tracked buff at load: " .. name)
-            
+            Debug("Found tracked buff at load: " .. name)
+
             -- Print to chat
             local timeStr = ""
             if duration and duration > 0 then
@@ -602,9 +792,8 @@ local function InitializeUnitBuffs(unit)
                 timeStr = string.format(" (%dm %ds)", minutes, seconds)
             end
             Print(unitName .. " has " .. name .. timeStr)
-            
+
             -- Record the event immediately
-            Print("About to record buff event")
             local timestamp = time()
             local entry = {
                 timestamp = timestamp,
@@ -614,14 +803,13 @@ local function InitializeUnitBuffs(unit)
                 event = "BUFF_GAINED",
                 duration = duration or 0
             }
-            
+
             -- Add directly to history
             if not buffHistory then buffHistory = {} end
-            Print("Adding buff to history directly")
             table.insert(buffHistory, entry)
             if not PotionTrackerDB then PotionTrackerDB = {} end
             PotionTrackerDB.buffHistory = buffHistory
-            Print("History size after adding: " .. #buffHistory)
+            Debug("History size after initializing buff: " .. #buffHistory)
         end
     end
     
@@ -632,17 +820,16 @@ end
 -- Function to add event to history
 local function AddToHistory(event)
     if not buffHistory then buffHistory = {} end
-    Print("Adding to history: " .. (event.event or "unknown") .. " - " .. (event.buff or event.targetName or "unknown"))
     table.insert(buffHistory, event)
     -- Ensure we save to PotionTrackerDB
     if not PotionTrackerDB then PotionTrackerDB = {} end
     PotionTrackerDB.buffHistory = buffHistory
-    Print("Current history size: " .. #buffHistory)
+    Debug("Current history size: " .. #buffHistory)
 end
 
 -- Function to record buff event
 local function RecordBuffEvent(unitName, buffName, eventType, duration)
-    Print("Recording buff event: " .. eventType .. " - " .. buffName)
+    Debug("Recording buff event: " .. eventType .. " - " .. buffName)
     local timestamp = time()
     local entry = {
         timestamp = timestamp,
@@ -676,8 +863,9 @@ local function CheckNewBuffs(unit)
     
     -- Throttle updates
     local currentTime = GetTime()
-    if currentTime - lastUpdate < UPDATE_THROTTLE then return end
-    lastUpdate = currentTime
+    local previousUpdate = lastUnitUpdate[unit] or 0
+    if currentTime - previousUpdate < UPDATE_THROTTLE then return end
+    lastUnitUpdate[unit] = currentTime
     
     local unitName = UnitName(unit)
     local currentBuffs = GetUnitBuffs(unit)
@@ -771,7 +959,7 @@ end
 
 -- Function to initialize all appropriate units
 InitializeAllUnits = function()
-    Print("Initializing buff tracking...")
+    Debug("Initializing buff tracking")
     
     -- Always check player
     InitializeUnitBuffs("player")
@@ -798,7 +986,10 @@ end
 local inCombat = false
 local currentTarget = nil
 local combatStartTime = nil
-local combatTarget = nil  -- Store the target we started combat with
+local combatTargets = {}
+local combatTarget = nil  -- Primary target when combat started
+local encounterCounter = 0
+local activeEncounterId = nil
 
 -- Function to get target info
 local function GetTargetInfo()
@@ -811,68 +1002,141 @@ local function GetTargetInfo()
     local level = UnitLevel("target")
     local classification = UnitClassification("target")
     local isElite = classification == "elite" or classification == "rareelite"
-    
+    local guid = UnitGUID("target")
+
     return {
         name = name,
         level = level,
         classification = classification,
-        isElite = isElite
+        isElite = isElite,
+        guid = guid
     }
+end
+
+local function GetCombatTargetsSnapshot()
+    local snapshot = {}
+    for _, data in pairs(combatTargets) do
+        table.insert(snapshot, {
+            name = data.name,
+            level = data.level,
+            classification = data.classification,
+            isElite = data.isElite,
+            firstSeen = data.firstSeen,
+        })
+    end
+
+    table.sort(snapshot, function(a, b)
+        return (a.name or "") < (b.name or "")
+    end)
+
+    return snapshot
 end
 
 -- Function to record combat event
 local function RecordCombatEvent(eventType, target)
-    if not target or not trackedMobs[target.name] then return end
-    
+    local targetName = target and target.name or nil
+    if targetName and not trackedMobs[targetName] then
+        Debug("Ignoring combat event for untracked target: " .. targetName)
+        return
+    end
+
     local eventInfo = {
         timestamp = time(),
         event = eventType,
-        targetName = target.name,
-        targetLevel = target.level,
-        targetClassification = target.classification,
-        duration = eventType == "COMBAT_END" and (time() - (combatStartTime or time())) or nil
+        encounterId = activeEncounterId,
+        targetName = targetName,
+        targetLevel = target and target.level or nil,
+        targetClassification = target and target.classification or nil,
     }
-    
+
+    if eventType == "COMBAT_END" then
+        eventInfo.duration = time() - (combatStartTime or time())
+        eventInfo.targets = GetCombatTargetsSnapshot()
+        eventInfo.targetCount = eventInfo.targets and #eventInfo.targets or 0
+    end
+
     -- Add to history
     AddToHistory(eventInfo)
-    
+
     -- Print combat info
     if eventType == "COMBAT_START" then
-        Print(string.format("Entered combat with %s (Level %d%s)", 
-            target.name, 
-            target.level,
-            target.isElite and " Elite" or ""))
+        if targetName then
+            Print(string.format("Entered combat with %s (Level %s%s) [Encounter %d]",
+                targetName,
+                tostring(target and target.level or "?"),
+                target and target.isElite and " Elite" or "",
+                activeEncounterId or 0))
+        else
+            Print(string.format("Entered combat [Encounter %d]", activeEncounterId or 0))
+        end
     elseif eventType == "COMBAT_END" then
-        Print(string.format("Left combat with %s (Duration: %d seconds)", 
-            target.name,
-            eventInfo.duration))
+        local countText = eventInfo.targetCount and eventInfo.targetCount > 0 and string.format(" involving %d target(s)", eventInfo.targetCount) or ""
+        Print(string.format("Left combat%s after %d seconds [Encounter %d]",
+            countText,
+            eventInfo.duration or 0,
+            activeEncounterId or 0))
+    elseif eventType == "COMBAT_TARGET_ADDED" and targetName then
+        Print(string.format("Tracking combat target: %s", targetName))
     end
+end
+
+local function AddCombatTarget(target)
+    if not inCombat then return end
+    if not target or not target.name or not trackedMobs[target.name] then return end
+
+    local key = target.guid or target.name
+    if not combatTargets[key] then
+        combatTargets[key] = {
+            name = target.name,
+            level = target.level,
+            classification = target.classification,
+            isElite = target.isElite,
+            firstSeen = time(),
+        }
+        if not combatTarget then
+            combatTarget = target
+        end
+        RecordCombatEvent("COMBAT_TARGET_ADDED", target)
+    end
+end
+
+local function ResetCombatState()
+    inCombat = false
+    combatStartTime = nil
+    combatTarget = nil
+    activeEncounterId = nil
+    combatTargets = {}
+    currentTarget = nil
 end
 
 -- Event handler
 f:SetScript("OnEvent", function(self, event, ...)
     if event == "PLAYER_LOGIN" then
         -- Initialize saved variables
-        PotionTrackerDB = PotionTrackerDB or {
-            minimapPos = 45,
-            isTracking = false,
-            buffHistory = {},
-            exportedCSV = nil,
-            trackedBuffs = {
-                -- Default tracked buffs
-                [11359] = true,  -- Greater Restoration
-                [6615] = true,   -- Free Action
-                [17543] = true,  -- Greater Fire Protection
-                [17549] = true,  -- Greater Arcane Protection
-                [17548] = true,  -- Greater Shadow Protection
-                [17544] = false, -- Greater Nature Protection
-                [17545] = false, -- Greater Frost Protection
-            }
-        }
-        
+        PotionTrackerDB = PotionTrackerDB or {}
+        PotionTrackerDB.minimapPos = PotionTrackerDB.minimapPos or 45
+        PotionTrackerDB.isTracking = PotionTrackerDB.isTracking or false
+        PotionTrackerDB.buffHistory = PotionTrackerDB.buffHistory or {}
+        PotionTrackerDB.trackedBuffs = PotionTrackerDB.trackedBuffs or {}
+
+        for spellId in pairs(availableBuffs) do
+            if PotionTrackerDB.trackedBuffs[spellId] == nil then
+                PotionTrackerDB.trackedBuffs[spellId] = GetDefaultBuffState(spellId)
+            end
+        end
+
+        if PotionTrackerDB.logLevel then
+            if not SetActiveLogLevel(PotionTrackerDB.logLevel) then
+                SetActiveLogLevel("INFO")
+            end
+        else
+            SetActiveLogLevel(activeLogLevel)
+        end
+        Debug("Active log level: " .. activeLogLevel)
+
         -- Load saved buff history
         buffHistory = PotionTrackerDB.buffHistory or {}
-        
+
         -- Load tracked buffs from saved variables
         LoadTrackedBuffs()
         
@@ -901,7 +1165,7 @@ f:SetScript("OnEvent", function(self, event, ...)
         -- Find new members
         for name, unit in pairs(newGroupMembers) do
             if not currentGroupMembers[name] then
-                Print("New member joined: " .. name)
+                Debug("New member joined: " .. name)
                 InitializeUnitBuffs(unit)
             end
         end
@@ -911,31 +1175,44 @@ f:SetScript("OnEvent", function(self, event, ...)
     elseif event == "PLAYER_REGEN_DISABLED" then
         -- Entering combat
         if not isTracking then return end
-        
-        -- Get target info when entering combat
+
+        inCombat = true
+        encounterCounter = encounterCounter + 1
+        activeEncounterId = encounterCounter
+        combatStartTime = time()
+        combatTargets = {}
+
         local target = GetTargetInfo()
         if target then
-            combatStartTime = time()
-            combatTarget = target  -- Store the target we started combat with
-            RecordCombatEvent("COMBAT_START", target)
+            local key = target.guid or target.name
+            combatTarget = target
+            combatTargets[key] = {
+                name = target.name,
+                level = target.level,
+                classification = target.classification,
+                isElite = target.isElite,
+                firstSeen = time(),
+            }
+        else
+            combatTarget = nil
         end
-        
+
+        RecordCombatEvent("COMBAT_START", combatTarget)
+
     elseif event == "PLAYER_REGEN_ENABLED" then
         -- Leaving combat
         if not isTracking or not combatStartTime then return end
-        
-        -- Use the stored combat target for the end event
-        if combatTarget then
-            RecordCombatEvent("COMBAT_END", combatTarget)
-        end
-        combatStartTime = nil
-        currentTarget = nil
-        combatTarget = nil  -- Clear the stored combat target
-        
+
+        RecordCombatEvent("COMBAT_END", combatTarget)
+        ResetCombatState()
+
     elseif event == "PLAYER_TARGET_CHANGED" then
         -- Update current target info
         if isTracking then
             currentTarget = GetTargetInfo()
+            if inCombat and currentTarget then
+                AddCombatTarget(currentTarget)
+            end
         end
     elseif event == "COMBAT_LOG_EVENT_UNFILTERED" then
         local timestamp, combatEvent, _, sourceGUID, sourceName, _, _, destGUID, destName, _, _, spellId = CombatLogGetCurrentEventInfo()
@@ -947,50 +1224,23 @@ f:SetScript("OnEvent", function(self, event, ...)
                 RecordBuffEvent(destName or "Unknown", trackedBuffs[spellId], "BUFF_GAINED", 0)
             end
         end
+
+        if inCombat and destName and trackedMobs[destName] then
+            AddCombatTarget({ name = destName, guid = destGUID })
+        end
     end
 end)
 
 -- Slash command
 SLASH_POTIONTRACKER1 = "/pt"
 SlashCmdList["POTIONTRACKER"] = function(msg)
-    if msg == "toggle" then
-        ToggleTracking()
-    elseif msg == "config" or msg == "buffs" then
-        Print("Slash command: config")
-        ShowBuffConfigFrame()
-    elseif msg == "export" then
-        ExportCSV()
-        Print("Export complete. Logout to persist immediately if desired.")
-    elseif msg == "clear" then
-        -- Clear both in-memory and saved data
-        PotionTrackerDB.buffHistory = {}
-        buffHistory = {}
-        PotionTrackerDB.exportedCSV = nil
-        Print("History cleared. Fresh data will be saved going forward.")
-    elseif msg == "stats" then
-        local count = #(PotionTrackerDB.buffHistory or {})
-        Print(string.format("Tracking %d buff events", count))
-        
-        -- Debug information
-        Print("=== DEBUG INFO ===")
-        Print("isTracking: " .. tostring(isTracking))
-        Print("trackedBuffs count: " .. tostring(GetTableSize(trackedBuffs)))
-        Print("Available buffs:")
-        for spellId, buffName in pairs(availableBuffs) do
-            local isTracked = trackedBuffs[spellId] ~= nil
-            local isEnabled = PotionTrackerDB and PotionTrackerDB.trackedBuffs and PotionTrackerDB.trackedBuffs[spellId]
-            Print(string.format("  %s (ID: %d) - Tracked: %s, Enabled: %s", 
-                buffName, spellId, tostring(isTracked), tostring(isEnabled)))
-        end
-    elseif msg == "hidetest" then
-        if _G.PotionTrackerTestFrame then
-            _G.PotionTrackerTestFrame:Hide()
-            Print("Test frame hidden")
-        end
-    elseif msg == "reload" then
-        LoadTrackedBuffs()
-        Print("Reloaded tracked buffs")
-    else
+    msg = msg or ""
+    msg = strtrim(msg)
+    local command, argument = msg:match("^(%S+)%s*(.*)$")
+    command = string.lower(command or "")
+    argument = strtrim(argument or "")
+
+    if command == "" or command == "help" then
         Print("Commands:")
         Print("/pt toggle - Toggle buff tracking")
         Print("/pt config - Configure tracked buffs")
@@ -999,5 +1249,57 @@ SlashCmdList["POTIONTRACKER"] = function(msg)
         Print("/pt stats - Show tracking statistics")
         Print("/pt reload - Reload tracked buffs")
         Print("/pt hidetest - Hide test frame")
+        Print("/pt log [level] - View or set log level")
+        return
+    end
+
+    if command == "toggle" then
+        ToggleTracking()
+    elseif command == "config" or command == "buffs" then
+        Debug("Slash command: config")
+        ShowBuffConfigFrame()
+    elseif command == "export" then
+        ExportCSV()
+        Debug("Slash command: export")
+    elseif command == "clear" then
+        PotionTrackerDB.buffHistory = {}
+        buffHistory = {}
+        PotionTrackerDB.exportedCSV = nil
+        Print("History cleared. Fresh data will be saved going forward.")
+    elseif command == "stats" then
+        local count = #(PotionTrackerDB.buffHistory or {})
+        Print(string.format("Tracking %d buff events", count))
+        if ShouldLog("DEBUG") then
+            Print("Detailed stats available in debug log level", "DEBUG")
+            Print("isTracking: " .. tostring(isTracking), "DEBUG")
+            Print("trackedBuffs count: " .. tostring(GetTableSize(trackedBuffs)), "DEBUG")
+            Print("Available buffs:", "DEBUG")
+            for spellId, buffInfo in pairs(availableBuffs) do
+                local isTracked = trackedBuffs[spellId] ~= nil
+                local isEnabled = PotionTrackerDB and PotionTrackerDB.trackedBuffs and PotionTrackerDB.trackedBuffs[spellId]
+                Print(string.format("  %s (ID: %d) - Tracked: %s, Enabled: %s",
+                    buffInfo.name, spellId, tostring(isTracked), tostring(isEnabled)), "DEBUG")
+            end
+        end
+    elseif command == "hidetest" then
+        if _G.PotionTrackerTestFrame then
+            _G.PotionTrackerTestFrame:Hide()
+            Print("Test frame hidden")
+        end
+    elseif command == "reload" then
+        LoadTrackedBuffs()
+        Print("Reloaded tracked buffs")
+    elseif command == "log" then
+        if argument == "" then
+            Print("Current log level: " .. activeLogLevel)
+        else
+            if SetActiveLogLevel(argument) then
+                Print("Log level set to " .. activeLogLevel)
+            else
+                Print("Invalid log level. Use: error, warn, info, debug.", "WARN")
+            end
+        end
+    else
+        Print("Unknown command. Type /pt help for options.", "WARN")
     end
 end
