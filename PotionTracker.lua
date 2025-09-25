@@ -169,6 +169,25 @@ local previousBuffs = {}
 local dropDown = nil  -- Move dropDown to global scope
 local optionsPanel = nil
 
+local MINIMAP_SHAPE_FALLBACKS = {
+    ROUND = { true, true, true, true },
+    SQUARE = { false, false, false, false },
+}
+
+local function PlayUISound(soundKitKey, fallback)
+    if not PlaySound then
+        return
+    end
+
+    if SOUNDKIT and SOUNDKIT[soundKitKey] then
+        PlaySound(SOUNDKIT[soundKitKey])
+    elseif type(fallback) == "string" then
+        PlaySound(fallback)
+    elseif type(soundKitKey) == "string" then
+        PlaySound(soundKitKey)
+    end
+end
+
 -- Forward declarations
 local InitializeAllUnits
 local UpdateOptionsPanel
@@ -322,7 +341,6 @@ local function CreateMinimapIcon()
     -- Set size and position
     frame:SetWidth(32)
     frame:SetHeight(32)
-    frame:SetPoint("TOPLEFT", Minimap, "TOPLEFT", 0, 0)
     frame:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
     
     -- Create the icon texture (should be behind the border)
@@ -353,22 +371,48 @@ local function CreateMinimapIcon()
     -- Minimap icon positioning
     local function UpdatePosition()
         local angle = math.rad(PotionTrackerDB.minimapPos or 45)
-        local cos = math.cos(angle)
-        local sin = math.sin(angle)
+        local cosAngle = math.cos(angle)
+        local sinAngle = math.sin(angle)
         local minimapShape = GetMinimapShape and GetMinimapShape() or "ROUND"
-        
-        -- Get the minimap size
-        local minimapWidth = Minimap:GetWidth() / 2
-        local minimapHeight = Minimap:GetHeight() / 2
-        
-        -- Adjust position based on shape
-        local w = minimapWidth * 0.75
-        local h = minimapHeight * 0.75
-        
+        local quadTable = (MinimapShapes and MinimapShapes[minimapShape])
+            or MINIMAP_SHAPE_FALLBACKS[minimapShape]
+            or MINIMAP_SHAPE_FALLBACKS.ROUND
+
+        local quadrant = 1
+        if cosAngle < 0 then
+            quadrant = quadrant + 1
+        end
+        if sinAngle > 0 then
+            quadrant = quadrant + 2
+        end
+
+        local radius = (Minimap:GetWidth() / 2) + 5
+        local x, y
+
+        if quadTable[quadrant] then
+            x = cosAngle * radius
+            y = sinAngle * radius
+        else
+            local diagRadius = radius * 0.7071067812
+            local nextQuadrant = (quadrant % 4) + 1
+            local previousQuadrant = quadrant == 1 and 4 or (quadrant - 1)
+
+            if quadTable[nextQuadrant] then
+                x = cosAngle * radius
+                y = sinAngle * diagRadius
+            elseif quadTable[previousQuadrant] then
+                x = cosAngle * diagRadius
+                y = sinAngle * radius
+            else
+                x = cosAngle * diagRadius
+                y = sinAngle * diagRadius
+            end
+        end
+
         frame:ClearAllPoints()
-        frame:SetPoint("CENTER", Minimap, "CENTER", w * cos, h * sin)
+        frame:SetPoint("CENTER", Minimap, "CENTER", x, y)
     end
-    
+
     -- Handle dragging
     frame:SetScript("OnDragStart", function(self)
         self.isMoving = true
@@ -388,7 +432,7 @@ local function CreateMinimapIcon()
             my = my * scale
             
             local angle = math.deg(math.atan2(ypos - my, xpos - mx))
-            PotionTrackerDB.minimapPos = angle
+            PotionTrackerDB.minimapPos = (angle + 360) % 360
             UpdatePosition()
         end
     end)
@@ -422,7 +466,9 @@ local function CreateMinimapIcon()
     frame:SetScript("OnEvent", function()
         UpdatePosition()
     end)
-    
+
+    frame:SetScript("OnShow", UpdatePosition)
+
     return frame
 end
 
@@ -434,18 +480,26 @@ local function CreateOptionsPanel()
     optionsPanel = CreateFrame("Frame", "PotionTrackerOptionsPanel", InterfaceOptionsFramePanelContainer or UIParent)
     optionsPanel.name = "PotionTracker"
 
+    local LINE_SPACING = 12
+    local SECTION_SPACING = 24
+
+    local function AnchorBelow(frame, relativeTo, spacing, offsetX)
+        frame:ClearAllPoints()
+        frame:SetPoint("TOPLEFT", relativeTo, "BOTTOMLEFT", offsetX or 0, -(spacing or LINE_SPACING))
+    end
+
     local title = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
     title:SetPoint("TOPLEFT", 16, -16)
     title:SetText("PotionTracker")
 
     local description = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-    description:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
+    AnchorBelow(description, title, LINE_SPACING)
     description:SetWidth(360)
     description:SetJustifyH("LEFT")
     description:SetText("Adjust tracking, retention and logging without using the minimap button.")
 
     local trackingCheckbox = CreateFrame("CheckButton", "PotionTrackerOptionsEnableTracking", optionsPanel, "InterfaceOptionsCheckButtonTemplate")
-    trackingCheckbox:SetPoint("TOPLEFT", description, "BOTTOMLEFT", 0, -16)
+    AnchorBelow(trackingCheckbox, description, SECTION_SPACING)
     trackingCheckbox.Text:SetText("Enable buff tracking")
     trackingCheckbox:SetScript("OnClick", function(self)
         if self:GetChecked() ~= isTracking then
@@ -457,25 +511,25 @@ local function CreateOptionsPanel()
     optionsPanel.enableTrackingCheckbox = trackingCheckbox
 
     local configButton = CreateFrame("Button", nil, optionsPanel, "UIPanelButtonTemplate")
-    configButton:SetPoint("TOPLEFT", trackingCheckbox, "BOTTOMLEFT", 0, -20)
+    AnchorBelow(configButton, trackingCheckbox, SECTION_SPACING)
     configButton:SetSize(220, 24)
     configButton:SetText("Configure tracked buffs...")
     configButton:SetScript("OnClick", ShowBuffConfigFrame)
     optionsPanel.configButton = configButton
 
     local exportButton = CreateFrame("Button", nil, optionsPanel, "UIPanelButtonTemplate")
-    exportButton:SetPoint("TOPLEFT", configButton, "BOTTOMLEFT", 0, -10)
+    AnchorBelow(exportButton, configButton, LINE_SPACING)
     exportButton:SetSize(220, 24)
     exportButton:SetText("Export history to CSV")
     exportButton:SetScript("OnClick", ExportCSV)
     optionsPanel.exportButton = exportButton
 
     local historyLabel = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-    historyLabel:SetPoint("TOPLEFT", exportButton, "BOTTOMLEFT", 0, -24)
+    AnchorBelow(historyLabel, exportButton, SECTION_SPACING)
     historyLabel:SetText("History retention")
 
     local historySlider = CreateFrame("Slider", "PotionTrackerHistoryLimitSlider", optionsPanel, "OptionsSliderTemplate")
-    historySlider:SetPoint("TOPLEFT", historyLabel, "BOTTOMLEFT", 0, -12)
+    AnchorBelow(historySlider, historyLabel, LINE_SPACING)
     historySlider:SetMinMaxValues(MIN_HISTORY_LIMIT, MAX_HISTORY_LIMIT)
     historySlider:SetValueStep(50)
     historySlider:SetObeyStepOnDrag(true)
@@ -506,11 +560,11 @@ local function CreateOptionsPanel()
     optionsPanel.historySlider = historySlider
 
     local logLabel = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-    logLabel:SetPoint("TOPLEFT", historySlider, "BOTTOMLEFT", 0, -28)
+    AnchorBelow(logLabel, historySlider, SECTION_SPACING)
     logLabel:SetText("Log verbosity")
 
     local logDropdown = CreateFrame("Frame", "PotionTrackerLogLevelDropdown", optionsPanel, "UIDropDownMenuTemplate")
-    logDropdown:SetPoint("TOPLEFT", logLabel, "BOTTOMLEFT", -16, -4)
+    AnchorBelow(logDropdown, logLabel, LINE_SPACING, -16)
     local logLevels = { "ERROR", "WARN", "INFO", "DEBUG" }
     optionsPanel.logLevelDropdown = logDropdown
     optionsPanel.logLevels = logLevels
@@ -655,81 +709,81 @@ CreateBuffConfigFrame = function()
         return buffConfigFrame
     end
 
-    -- Create main frame - SIMPLIFIED for Classic Era compatibility
     buffConfigFrame = CreateFrame("Frame", "PotionTrackerBuffConfigFrame", UIParent)
-    
+
     -- Basic frame setup
     buffConfigFrame:SetSize(400, 500)
     buffConfigFrame:SetPoint("CENTER")
     buffConfigFrame:SetFrameStrata("HIGH")
     buffConfigFrame:SetFrameLevel(1000)
-    
+    buffConfigFrame:SetMovable(true)
+    buffConfigFrame:EnableMouse(true)
+    buffConfigFrame:EnableKeyboard(true)
+    buffConfigFrame:RegisterForDrag("LeftButton")
+
+    buffConfigFrame:SetScript("OnDragStart", function(self)
+        if self.StartMoving then
+            self:StartMoving()
+        end
+    end)
+    buffConfigFrame:SetScript("OnDragStop", function(self)
+        if self.StopMovingOrSizing then
+            self:StopMovingOrSizing()
+        end
+    end)
+
     -- Simple background using a texture instead of backdrop
     local bg = buffConfigFrame:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
-    bg:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Background")
+    bg:SetTexture("Interface\DialogFrame\UI-DialogBox-Background")
     bg:SetVertexColor(0.2, 0.2, 0.2, 0.9) -- Dark gray background
-    
+
     -- Border using multiple textures
     local borderTop = buffConfigFrame:CreateTexture(nil, "BORDER")
-    borderTop:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Border")
+    borderTop:SetTexture("Interface\DialogFrame\UI-DialogBox-Border")
     borderTop:SetPoint("TOPLEFT", -16, 16)
     borderTop:SetPoint("TOPRIGHT", 16, 16)
     borderTop:SetHeight(16)
     borderTop:SetTexCoord(0, 1, 0, 0.25)
-    
+
     local borderBottom = buffConfigFrame:CreateTexture(nil, "BORDER")
-    borderBottom:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Border")
+    borderBottom:SetTexture("Interface\DialogFrame\UI-DialogBox-Border")
     borderBottom:SetPoint("BOTTOMLEFT", -16, -16)
     borderBottom:SetPoint("BOTTOMRIGHT", 16, -16)
     borderBottom:SetHeight(16)
     borderBottom:SetTexCoord(0, 1, 0.75, 1)
-    
+
     local borderLeft = buffConfigFrame:CreateTexture(nil, "BORDER")
-    borderLeft:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Border")
+    borderLeft:SetTexture("Interface\DialogFrame\UI-DialogBox-Border")
     borderLeft:SetPoint("TOPLEFT", -16, 16)
     borderLeft:SetPoint("BOTTOMLEFT", -16, -16)
     borderLeft:SetWidth(16)
     borderLeft:SetTexCoord(0, 0.25, 0, 1)
-    
+
     local borderRight = buffConfigFrame:CreateTexture(nil, "BORDER")
-    borderRight:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Border")
+    borderRight:SetTexture("Interface\DialogFrame\UI-DialogBox-Border")
     borderRight:SetPoint("TOPRIGHT", 16, 16)
     borderRight:SetPoint("BOTTOMRIGHT", 16, -16)
     borderRight:SetWidth(16)
     borderRight:SetTexCoord(0.75, 1, 0, 1)
-    
-    -- Make frame draggable
-    buffConfigFrame:SetMovable(true)
-    buffConfigFrame:EnableMouse(true)
-    buffConfigFrame:RegisterForDrag("LeftButton")
-    buffConfigFrame:SetScript("OnDragStart", function(self)
-        self:StartMoving()
-    end)
-    buffConfigFrame:SetScript("OnDragStop", function(self)
-        self:StopMovingOrSizing()
-    end)
-    
+
     -- Title
     local title = buffConfigFrame:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
     title:SetPoint("TOP", 0, -20)
     title:SetText("PotionTracker - Buff Configuration")
     title:SetTextColor(1, 1, 1, 1) -- White text
-    
-    -- Close button - simplified
-    local closeButton = CreateFrame("Button", nil, buffConfigFrame)
-    closeButton:SetSize(32, 32)
-    closeButton:SetPoint("TOPRIGHT", -10, -10)
-    closeButton:SetNormalTexture("Interface\\Buttons\\UI-Panel-MinimizeButton-Up")
-    closeButton:SetPushedTexture("Interface\\Buttons\\UI-Panel-MinimizeButton-Down")
+
+    -- Close button
+    local closeButton = CreateFrame("Button", nil, buffConfigFrame, "UIPanelCloseButton")
+    closeButton:SetPoint("TOPRIGHT", 2, 2)
     closeButton:SetScript("OnClick", function()
         buffConfigFrame:Hide()
     end)
-    
+
     -- Scrollable buff list
     local scrollFrame = CreateFrame("ScrollFrame", "PotionTrackerBuffScrollFrame", buffConfigFrame, "UIPanelScrollFrameTemplate")
     scrollFrame:SetPoint("TOPLEFT", 20, -60)
-    scrollFrame:SetPoint("BOTTOMRIGHT", -45, 60)
+    scrollFrame:SetPoint("BOTTOMRIGHT", -45, 90)
 
     local content = CreateFrame("Frame", nil, scrollFrame)
     content:SetSize(1, 1)
@@ -756,12 +810,12 @@ CreateBuffConfigFrame = function()
         checkbox:SetSize(24, 24)
 
         local normal = checkbox:CreateTexture(nil, "ARTWORK")
-        normal:SetTexture("Interface\\Buttons\\UI-CheckBox-Up")
+        normal:SetTexture("Interface\Buttons\UI-CheckBox-Up")
         normal:SetAllPoints()
         checkbox:SetNormalTexture(normal)
 
         local checked = checkbox:CreateTexture(nil, "ARTWORK")
-        checked:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
+        checked:SetTexture("Interface\Buttons\UI-CheckBox-Check")
         checked:SetAllPoints()
         checkbox:SetCheckedTexture(checked)
 
@@ -773,6 +827,7 @@ CreateBuffConfigFrame = function()
             end
         end
         checkbox:SetChecked(isChecked)
+        checkbox.initialState = isChecked
 
         local label = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
         label:SetPoint("LEFT", checkbox, "RIGHT", 10, 0)
@@ -791,63 +846,106 @@ CreateBuffConfigFrame = function()
 
     -- Store checkboxes for later use
     buffConfigFrame.checkboxes = checkboxes
-    
-    -- Save button - simplified
-    local saveButton = CreateFrame("Button", nil, buffConfigFrame)
-    saveButton:SetSize(100, 30)
+
+    local statusText = buffConfigFrame:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    statusText:SetPoint("BOTTOM", 0, 60)
+    statusText:SetWidth(280)
+    statusText:SetJustifyH("CENTER")
+
+    -- Save and reset buttons
+    local saveButton = CreateFrame("Button", nil, buffConfigFrame, "UIPanelButtonTemplate")
+    saveButton:SetSize(120, 26)
     saveButton:SetPoint("BOTTOMLEFT", 20, 20)
-    saveButton:SetNormalTexture("Interface\\Buttons\\UI-Panel-Button-Up")
-    saveButton:SetPushedTexture("Interface\\Buttons\\UI-Panel-Button-Down")
-    
-    local saveText = saveButton:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-    saveText:SetPoint("CENTER")
-    saveText:SetText("Save")
-    saveText:SetTextColor(1, 1, 1, 1)
-    
+    saveButton:SetText("Save")
+
+    local resetButton = CreateFrame("Button", nil, buffConfigFrame, "UIPanelButtonTemplate")
+    resetButton:SetSize(120, 26)
+    resetButton:SetPoint("BOTTOMRIGHT", -20, 20)
+    resetButton:SetText("Reset")
+
+    local function UpdateChangeState(message, r, g, b)
+        local hasChanges = false
+        for _, checkbox in pairs(checkboxes) do
+            if checkbox:GetChecked() ~= checkbox.initialState then
+                hasChanges = true
+                break
+            end
+        end
+
+        if hasChanges then
+            saveButton:Enable()
+            statusText:SetText(message or "Unsaved changes")
+            statusText:SetTextColor(r or 1, g or 0.82, b or 0)
+        else
+            saveButton:Disable()
+            statusText:SetText(message or "No pending changes")
+            statusText:SetTextColor(r or 0.7, g or 0.9, b or 0.7)
+        end
+
+        buffConfigFrame.hasPendingChanges = hasChanges
+    end
+
+    buffConfigFrame.UpdateChangeState = UpdateChangeState
+
+    function buffConfigFrame:ResetInitialStates(message, r, g, b)
+        for _, checkbox in pairs(self.checkboxes) do
+            checkbox.initialState = checkbox:GetChecked()
+        end
+        UpdateChangeState(message, r, g, b)
+    end
+
+    for _, checkbox in pairs(checkboxes) do
+        checkbox:SetScript("OnClick", function()
+            UpdateChangeState()
+        end)
+    end
+
     saveButton:SetScript("OnClick", function()
-        -- Save checkbox states
         if not PotionTrackerDB.trackedBuffs then
             PotionTrackerDB.trackedBuffs = {}
         end
-        
+
         for spellId, checkbox in pairs(checkboxes) do
             PotionTrackerDB.trackedBuffs[spellId] = checkbox:GetChecked()
+            checkbox.initialState = checkbox:GetChecked()
         end
-        
-        -- Reload tracked buffs
+
         LoadTrackedBuffs()
-        
+
+        PlayUISound("IG_MAINMENU_OPTION_CHECKBOX_ON", "igMainMenuOptionCheckBoxOn")
         Print("Buff configuration saved!")
-        buffConfigFrame:Hide()
+        UpdateChangeState("Changes saved", 0.7, 0.9, 0.7)
     end)
-    
-    -- Reset button - simplified
-    local resetButton = CreateFrame("Button", nil, buffConfigFrame)
-    resetButton:SetSize(100, 30)
-    resetButton:SetPoint("BOTTOMRIGHT", -20, 20)
-    resetButton:SetNormalTexture("Interface\\Buttons\\UI-Panel-Button-Up")
-    resetButton:SetPushedTexture("Interface\\Buttons\\UI-Panel-Button-Down")
-    
-    local resetText = resetButton:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-    resetText:SetPoint("CENTER")
-    resetText:SetText("Reset")
-    resetText:SetTextColor(1, 1, 1, 1)
-    
+
     resetButton:SetScript("OnClick", function()
-        -- Reset to defaults
         for spellId, checkbox in pairs(checkboxes) do
             checkbox:SetChecked(GetDefaultBuffState(spellId))
         end
+
+        PlayUISound("IG_MAINMENU_OPTION_CHECKBOX_ON", "igMainMenuOptionCheckBoxOn")
+        UpdateChangeState("Defaults restored (save to apply)", 1, 0.82, 0)
     end)
-    
-    -- Show the frame immediately
-    buffConfigFrame:Show()
-    
+
+    buffConfigFrame:SetScript("OnKeyDown", function(self, key)
+        if key == "ESCAPE" then
+            self:Hide()
+        end
+    end)
+
+    buffConfigFrame:SetScript("OnShow", function()
+        PlayUISound("IG_MAINMENU_OPEN", "igMainMenuOpen")
+        UpdateChangeState()
+    end)
+
+    buffConfigFrame:SetScript("OnHide", function()
+        PlayUISound("IG_MAINMENU_CLOSE", "igMainMenuClose")
+    end)
+
+    UpdateChangeState("No pending changes", 0.7, 0.9, 0.7)
+
     Debug("Buff config frame creation completed")
     return buffConfigFrame
 end
-
--- Function to show buff configuration frame (made global for dropdown access)
 ShowBuffConfigFrame = function()
     Debug("ShowBuffConfigFrame called")
 
@@ -874,7 +972,11 @@ ShowBuffConfigFrame = function()
             end
         end
     end
-    
+
+    if buffConfigFrame.ResetInitialStates then
+        buffConfigFrame:ResetInitialStates("No pending changes", 0.7, 0.9, 0.7)
+    end
+
     -- Show the frame
     buffConfigFrame:Show()
     
