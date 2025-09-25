@@ -73,34 +73,84 @@ GetTableSize = function(t)
 end
 
 -- Function to export history as CSV (moved outside local scope)
+local function FormatTargetDetails(targets)
+    if type(targets) ~= "table" then
+        return ""
+    end
+
+    local summaries = {}
+    for _, info in ipairs(targets) do
+        local name = info.name or "Unknown"
+        local details = {}
+
+        if info.level then
+            table.insert(details, string.format("Lvl %d", info.level))
+        end
+
+        if info.classification and info.classification ~= "" then
+            table.insert(details, info.classification)
+        end
+
+        if info.isElite then
+            table.insert(details, "Elite")
+        end
+
+        if #details > 0 then
+            name = string.format("%s (%s)", name, table.concat(details, " "))
+        end
+
+        table.insert(summaries, name)
+    end
+
+    return table.concat(summaries, "; ")
+end
+
 ExportCSV = function()
     if not PotionTrackerDB or not PotionTrackerDB.buffHistory or #PotionTrackerDB.buffHistory == 0 then
         Print("No events to export")
         return
     end
-    
+
     -- Create CSV header
-    local csv = "Timestamp,Event,Unit,Buff,Target,Duration\n"
-    
+    local csv = "Timestamp,Event,Unit,Buff,Target,Duration,EncounterID,TargetLevel,TargetClassification,TargetCount,TargetDetails\n"
+
     -- Add each event
     for _, event in ipairs(PotionTrackerDB.buffHistory) do
         local timestamp = event.date or date("%Y-%m-%d %H:%M:%S", event.timestamp)
         -- Escape any commas in the fields
-        local function escape(str)
-            if str and str:find(",") then
-                return '"' .. str .. '"'
+        local function escape(value)
+            if value == nil then
+                value = ""
             end
-            return str
+
+            if type(value) ~= "string" then
+                value = tostring(value)
+            end
+
+            if value:find('"') then
+                value = value:gsub('"', '""')
+            end
+
+            if value:find(",") or value:find("\n") or value:find('"') then
+                return '"' .. value .. '"'
+            end
+
+            return value
         end
 
         -- Combine fields into CSV line
-        local line = string.format("%s,%s,%s,%s,%s,%s\n",
+        local line = string.format("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
             escape(timestamp),
             escape(event.event or ""),
             escape(event.unit or ""),
             escape(event.buff or ""),
             escape(event.targetName or ""),
-            escape(event.duration and tostring(event.duration) or "")
+            escape(event.duration and tostring(event.duration) or ""),
+            escape(event.encounterId or ""),
+            escape(event.targetLevel or ""),
+            escape(event.targetClassification or ""),
+            escape(event.targetCount or ""),
+            escape(FormatTargetDetails(event.targets))
         )
 
         csv = csv .. line
@@ -117,9 +167,70 @@ local minimapIcon = nil
 local buffHistory = {}
 local previousBuffs = {}
 local dropDown = nil  -- Move dropDown to global scope
+local optionsPanel = nil
 
 -- Forward declarations
 local InitializeAllUnits
+local UpdateOptionsPanel
+local CreateOptionsPanel
+
+local DEFAULT_HISTORY_LIMIT = 1000
+local MIN_HISTORY_LIMIT = 100
+local MAX_HISTORY_LIMIT = 5000
+
+local function NormalizeHistoryLimit(value)
+    local limit = tonumber(value) or DEFAULT_HISTORY_LIMIT
+    limit = math.floor(limit)
+    if limit < MIN_HISTORY_LIMIT then
+        limit = MIN_HISTORY_LIMIT
+    elseif limit > MAX_HISTORY_LIMIT then
+        limit = MAX_HISTORY_LIMIT
+    end
+    return limit
+end
+
+local function GetLogLevelDisplay(level)
+    if type(level) ~= "string" or level == "" then
+        return ""
+    end
+
+    return level:sub(1, 1) .. string.lower(level:sub(2))
+end
+
+local function GetHistoryLimit()
+    local limit = DEFAULT_HISTORY_LIMIT
+    if PotionTrackerDB and PotionTrackerDB.historyLimit then
+        limit = NormalizeHistoryLimit(PotionTrackerDB.historyLimit)
+    end
+    if not PotionTrackerDB then
+        PotionTrackerDB = {}
+    end
+    PotionTrackerDB.historyLimit = limit
+    return limit
+end
+
+local function EnforceHistoryLimit()
+    if not buffHistory then return end
+
+    local limit = GetHistoryLimit()
+    while #buffHistory > limit do
+        table.remove(buffHistory, 1)
+    end
+
+    if PotionTrackerDB then
+        PotionTrackerDB.buffHistory = buffHistory
+    end
+end
+
+local function SetHistoryLimit(value)
+    if not PotionTrackerDB then
+        PotionTrackerDB = {}
+    end
+
+    PotionTrackerDB.historyLimit = NormalizeHistoryLimit(value)
+    EnforceHistoryLimit()
+    return PotionTrackerDB.historyLimit
+end
 
 -- Function to toggle tracking
 local function ToggleTracking()
@@ -148,6 +259,8 @@ local function ToggleTracking()
         end
         ResetCombatState()
     end
+
+    UpdateOptionsPanel()
 end
 
 -- Create dropdown menu
@@ -311,6 +424,130 @@ local function CreateMinimapIcon()
     end)
     
     return frame
+end
+
+local function CreateOptionsPanel()
+    if optionsPanel then
+        return optionsPanel
+    end
+
+    optionsPanel = CreateFrame("Frame", "PotionTrackerOptionsPanel", InterfaceOptionsFramePanelContainer or UIParent)
+    optionsPanel.name = "PotionTracker"
+
+    local title = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
+    title:SetPoint("TOPLEFT", 16, -16)
+    title:SetText("PotionTracker")
+
+    local description = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    description:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
+    description:SetWidth(360)
+    description:SetJustifyH("LEFT")
+    description:SetText("Adjust tracking, retention and logging without using the minimap button.")
+
+    local trackingCheckbox = CreateFrame("CheckButton", "PotionTrackerOptionsEnableTracking", optionsPanel, "InterfaceOptionsCheckButtonTemplate")
+    trackingCheckbox:SetPoint("TOPLEFT", description, "BOTTOMLEFT", 0, -16)
+    trackingCheckbox.Text:SetText("Enable buff tracking")
+    trackingCheckbox:SetScript("OnClick", function(self)
+        if self:GetChecked() ~= isTracking then
+            ToggleTracking()
+        else
+            UpdateOptionsPanel()
+        end
+    end)
+    optionsPanel.enableTrackingCheckbox = trackingCheckbox
+
+    local configButton = CreateFrame("Button", nil, optionsPanel, "UIPanelButtonTemplate")
+    configButton:SetPoint("TOPLEFT", trackingCheckbox, "BOTTOMLEFT", 0, -20)
+    configButton:SetSize(220, 24)
+    configButton:SetText("Configure tracked buffs...")
+    configButton:SetScript("OnClick", ShowBuffConfigFrame)
+    optionsPanel.configButton = configButton
+
+    local exportButton = CreateFrame("Button", nil, optionsPanel, "UIPanelButtonTemplate")
+    exportButton:SetPoint("TOPLEFT", configButton, "BOTTOMLEFT", 0, -10)
+    exportButton:SetSize(220, 24)
+    exportButton:SetText("Export history to CSV")
+    exportButton:SetScript("OnClick", ExportCSV)
+    optionsPanel.exportButton = exportButton
+
+    local historyLabel = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+    historyLabel:SetPoint("TOPLEFT", exportButton, "BOTTOMLEFT", 0, -24)
+    historyLabel:SetText("History retention")
+
+    local historySlider = CreateFrame("Slider", "PotionTrackerHistoryLimitSlider", optionsPanel, "OptionsSliderTemplate")
+    historySlider:SetPoint("TOPLEFT", historyLabel, "BOTTOMLEFT", 0, -12)
+    historySlider:SetMinMaxValues(MIN_HISTORY_LIMIT, MAX_HISTORY_LIMIT)
+    historySlider:SetValueStep(50)
+    historySlider:SetObeyStepOnDrag(true)
+    historySlider:SetWidth(240)
+    historySlider.Text = _G[historySlider:GetName() .. "Text"]
+    historySlider.Low = _G[historySlider:GetName() .. "Low"]
+    historySlider.High = _G[historySlider:GetName() .. "High"]
+    if historySlider.Low then historySlider.Low:SetText(tostring(MIN_HISTORY_LIMIT)) end
+    if historySlider.High then historySlider.High:SetText(tostring(MAX_HISTORY_LIMIT)) end
+    if historySlider.Text then
+        historySlider.Text:SetText("Max history entries: " .. GetHistoryLimit())
+    end
+    historySlider:SetScript("OnValueChanged", function(self, value)
+        if self.updating then
+            return
+        end
+
+        local limit = SetHistoryLimit(value)
+        if math.abs(limit - value) > 0.001 then
+            self.updating = true
+            self:SetValue(limit)
+            self.updating = nil
+        end
+        if self.Text then
+            self.Text:SetText("Max history entries: " .. limit)
+        end
+    end)
+    optionsPanel.historySlider = historySlider
+
+    local logLabel = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+    logLabel:SetPoint("TOPLEFT", historySlider, "BOTTOMLEFT", 0, -28)
+    logLabel:SetText("Log verbosity")
+
+    local logDropdown = CreateFrame("Frame", "PotionTrackerLogLevelDropdown", optionsPanel, "UIDropDownMenuTemplate")
+    logDropdown:SetPoint("TOPLEFT", logLabel, "BOTTOMLEFT", -16, -4)
+    local logLevels = { "ERROR", "WARN", "INFO", "DEBUG" }
+    optionsPanel.logLevelDropdown = logDropdown
+    optionsPanel.logLevels = logLevels
+    UIDropDownMenu_SetWidth(logDropdown, 160)
+    UIDropDownMenu_Initialize(logDropdown, function(self, level)
+        if not level then return end
+        for _, levelKey in ipairs(logLevels) do
+            local info = UIDropDownMenu_CreateInfo()
+            info.text = GetLogLevelDisplay(levelKey)
+            info.value = levelKey
+            info.func = function(button)
+                SetActiveLogLevel(levelKey)
+                UIDropDownMenu_SetSelectedValue(logDropdown, levelKey)
+                if UIDropDownMenu_SetText then
+                    UIDropDownMenu_SetText(logDropdown, GetLogLevelDisplay(levelKey))
+                end
+            end
+            info.checked = (activeLogLevel == levelKey)
+            UIDropDownMenu_AddButton(info, level)
+        end
+    end)
+
+    if InterfaceOptions_AddCategory then
+        InterfaceOptions_AddCategory(optionsPanel)
+    end
+
+    optionsPanel:SetScript("OnShow", function()
+        UpdateOptionsPanel()
+    end)
+    optionsPanel.refresh = UpdateOptionsPanel
+    optionsPanel.default = function()
+        SetActiveLogLevel("INFO")
+        SetHistoryLimit(DEFAULT_HISTORY_LIMIT)
+        UpdateOptionsPanel()
+    end
+
+    return optionsPanel
 end
 
 -- Available buffs for tracking (spell ID -> metadata)
@@ -809,6 +1046,7 @@ local function InitializeUnitBuffs(unit)
             table.insert(buffHistory, entry)
             if not PotionTrackerDB then PotionTrackerDB = {} end
             PotionTrackerDB.buffHistory = buffHistory
+            EnforceHistoryLimit()
             Debug("History size after initializing buff: " .. #buffHistory)
         end
     end
@@ -824,6 +1062,7 @@ local function AddToHistory(event)
     -- Ensure we save to PotionTrackerDB
     if not PotionTrackerDB then PotionTrackerDB = {} end
     PotionTrackerDB.buffHistory = buffHistory
+    EnforceHistoryLimit()
     Debug("Current history size: " .. #buffHistory)
 end
 
@@ -892,6 +1131,31 @@ local function CheckNewBuffs(unit)
 end
 
 -- Function to check appropriate units based on group state
+local function UpdateOptionsPanel()
+    if not optionsPanel then return end
+
+    if optionsPanel.enableTrackingCheckbox then
+        optionsPanel.enableTrackingCheckbox:SetChecked(isTracking)
+    end
+
+    if optionsPanel.historySlider then
+        local limit = GetHistoryLimit()
+        optionsPanel.historySlider.updating = true
+        optionsPanel.historySlider:SetValue(limit)
+        optionsPanel.historySlider.updating = nil
+        if optionsPanel.historySlider.Text then
+            optionsPanel.historySlider.Text:SetText("Max history entries: " .. limit)
+        end
+    end
+
+    if optionsPanel.logLevelDropdown then
+        UIDropDownMenu_SetSelectedValue(optionsPanel.logLevelDropdown, activeLogLevel)
+        if UIDropDownMenu_SetText then
+            UIDropDownMenu_SetText(optionsPanel.logLevelDropdown, GetLogLevelDisplay(activeLogLevel))
+        end
+    end
+end
+
 local function CheckAppropriateUnits(unit)
     -- Always check if it's the player
     if unit == "player" then
@@ -1049,6 +1313,8 @@ local function RecordCombatEvent(eventType, target)
         targetClassification = target and target.classification or nil,
     }
 
+    eventInfo.date = date("%Y-%m-%d %H:%M:%S", eventInfo.timestamp)
+
     if eventType == "COMBAT_END" then
         eventInfo.duration = time() - (combatStartTime or time())
         eventInfo.targets = GetCombatTargetsSnapshot()
@@ -1136,16 +1402,21 @@ f:SetScript("OnEvent", function(self, event, ...)
 
         -- Load saved buff history
         buffHistory = PotionTrackerDB.buffHistory or {}
+        EnforceHistoryLimit()
 
         -- Load tracked buffs from saved variables
         LoadTrackedBuffs()
         
         -- Create minimap icon
         minimapIcon = CreateMinimapIcon()
-        
+
         -- Set initial tracking state
         isTracking = PotionTrackerDB.isTracking
         UpdateIconState()
+
+        -- Create Interface Options panel for easier access
+        CreateOptionsPanel()
+        UpdateOptionsPanel()
         
         -- Initialize buff tracking if it was enabled
         if isTracking then
@@ -1295,6 +1566,7 @@ SlashCmdList["POTIONTRACKER"] = function(msg)
         else
             if SetActiveLogLevel(argument) then
                 Print("Log level set to " .. activeLogLevel)
+                UpdateOptionsPanel()
             else
                 Print("Invalid log level. Use: error, warn, info, debug.", "WARN")
             end
