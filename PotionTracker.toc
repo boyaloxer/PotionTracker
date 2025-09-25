@@ -1,0 +1,14 @@
+## Interface: 11404
+## Title: PotionTracker
+## Notes: Tracks potion and buff usage
+## Author: Your Name
+## Version: 1.0
+## SavedVariables: PotionTrackerDB
+
+# Libraries
+Libs\LibStub\LibStub.lua
+Libs\LibUIDropDownMenu\LibUIDropDownMenu.lua
+Libs\LibUIDropDownMenu\LibEasyMenu.lua
+
+# Core files
+PotionTracker.lua
