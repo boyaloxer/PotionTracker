@@ -174,9 +174,38 @@ ExportCSV = function()
         csv = csv .. line
     end
 
-    -- Save formatted CSV to SavedVariables
-    PotionTrackerDB.exportedCSV = csv
-    Print("CSV export ready. Data will be saved automatically on logout.")
+    -- Try to write CSV file to WoW directory
+    local success = false
+    local errorMsg = ""
+    
+    -- Get the WoW directory path
+    local wowPath = GetWoWDirectory and GetWoWDirectory()
+    if wowPath then
+        -- Create filename with timestamp
+        local timestamp = date("%Y%m%d_%H%M%S")
+        local filename = string.format("PotionTracker_Export_%s.csv", timestamp)
+        local filepath = wowPath .. "\\" .. filename
+        
+        -- Attempt to write the file
+        local file = io.open(filepath, "w")
+        if file then
+            file:write(csv)
+            file:close()
+            success = true
+            Print(string.format("CSV exported successfully to: %s", filepath))
+        else
+            errorMsg = "Could not create file in WoW directory"
+        end
+    else
+        errorMsg = "Could not determine WoW directory"
+    end
+    
+    -- Fallback: save to SavedVariables if file write failed
+    if not success then
+        PotionTrackerDB.exportedCSV = csv
+        Print(string.format("File export failed (%s). CSV saved to SavedVariables instead.", errorMsg))
+        Print("Data will be saved automatically on logout.")
+    end
 end
 
 -- Initialize variables
