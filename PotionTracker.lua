@@ -68,8 +68,28 @@ local function WithBackdrop(template)
         return template
     end
 
+    -- Check if template already contains BackdropTemplate
+    if string.find(template, "BackdropTemplate") then
+        return template
+    end
+
+    -- Only add BackdropTemplate if the mixin exists and template supports it
     if BackdropTemplateMixin then
-        return string.format("%s,BackdropTemplate", template)
+        -- List of templates that support BackdropTemplate
+        local backdropCompatible = {
+            "UIDropDownMenuTemplate",
+            "DialogBoxFrame",
+            "UIPanelScrollFrameTemplate",
+            "UIPanelButtonTemplate",
+            "InterfaceOptionsCheckButtonTemplate",
+            "OptionsSliderTemplate"
+        }
+
+        for _, compatible in ipairs(backdropCompatible) do
+            if string.find(template, compatible) then
+                return string.format("%s,BackdropTemplate", template)
+            end
+        end
     end
 
     return template
@@ -616,10 +636,10 @@ function UI.Options:Create()
     AnchorBelow(trackingCheckbox, description, SECTION_SPACING)
     trackingCheckbox.Text:SetText("Enable buff tracking")
     trackingCheckbox:SetScript("OnClick", function(self)
-        if self:GetChecked() ~= isTracking then
+        local wasChecked = self:GetChecked()
+        if wasChecked ~= isTracking then
             ToggleTracking()
-        else
-            UpdateOptionsPanel()
+            -- ToggleTracking already calls UpdateOptionsPanel, so we don't need to call it again
         end
     end)
     optionsPanel.enableTrackingCheckbox = trackingCheckbox
@@ -704,10 +724,7 @@ function UI.Options:Create()
             info.value = levelKey
             info.func = function(button)
                 SetActiveLogLevel(levelKey)
-                UIDropDownMenu_SetSelectedValue(logDropdown, levelKey)
-                if UIDropDownMenu_SetText then
-                    UIDropDownMenu_SetText(logDropdown, GetLogLevelDisplay(levelKey))
-                end
+                UpdateLogLevelDropdown(logDropdown, levelKey)
             end
             info.checked = (activeLogLevel == levelKey)
             UIDropDownMenu_AddButton(info, level)
@@ -838,6 +855,7 @@ end
 
 -- Buff configuration frame
 local buffConfigFrame = nil
+local spreadsheetFrame = nil
 
 function UI.BuffConfig:ApplySavedPosition()
     if not buffConfigFrame then
@@ -882,6 +900,64 @@ function UI.BuffConfig:PersistPosition()
     }
 end
 
+function UI.BuffConfig:Dispose()
+    if buffConfigFrame then
+        buffConfigFrame:Hide()
+        buffConfigFrame = nil
+    end
+end
+
+function UI.Spreadsheet:ApplySavedPosition()
+    if not spreadsheetFrame then
+        return
+    end
+
+    local position = PotionTrackerDB and PotionTrackerDB.spreadsheetPosition
+    if position and position.point then
+        spreadsheetFrame:ClearAllPoints()
+        spreadsheetFrame:SetPoint(
+            position.point,
+            UIParent,
+            position.relativePoint,
+            position.xOffset,
+            position.yOffset
+        )
+    else
+        -- Default position if none saved
+        spreadsheetFrame:ClearAllPoints()
+        spreadsheetFrame:SetPoint("CENTER")
+    end
+end
+
+function UI.Spreadsheet:PersistPosition()
+    if not spreadsheetFrame or not spreadsheetFrame:GetPoint() then
+        return
+    end
+
+    local point, _, relativePoint, xOffset, yOffset = spreadsheetFrame:GetPoint(1)
+    if not point then
+        return
+    end
+
+    if not PotionTrackerDB then
+        PotionTrackerDB = {}
+    end
+
+    PotionTrackerDB.spreadsheetPosition = {
+        point = point,
+        relativePoint = relativePoint,
+        xOffset = xOffset,
+        yOffset = yOffset
+    }
+end
+
+function UI.Spreadsheet:Dispose()
+    if spreadsheetFrame then
+        spreadsheetFrame:Hide()
+        spreadsheetFrame = nil
+    end
+end
+
 -- Function to create buff configuration frame (made global for access)
 function UI.BuffConfig:Create()
     Debug("CreateBuffConfigFrame called")
@@ -891,7 +967,7 @@ function UI.BuffConfig:Create()
         return buffConfigFrame
     end
 
-    buffConfigFrame = CreateFrame("Frame", "PotionTrackerBuffConfigFrame", UIParent, WithBackdrop("DialogBoxFrame"))
+    buffConfigFrame = CreateFrame("Frame", "PotionTrackerBuffConfigFrame", InterfaceOptionsFrame or UIParent, WithBackdrop("DialogBoxFrame"))
 
     -- Basic frame setup
     buffConfigFrame:SetSize(400, 500)
@@ -1144,17 +1220,17 @@ function UI.Spreadsheet:Create()
         return spreadsheetFrame
     end
 
-    spreadsheetFrame = CreateFrame("Frame", "PotionTrackerSpreadsheetFrame", UIParent, WithBackdrop("DialogBoxFrame"))
-    
+    spreadsheetFrame = CreateFrame("Frame", "PotionTrackerSpreadsheetFrame", InterfaceOptionsFrame or UIParent, WithBackdrop("DialogBoxFrame"))
+
     -- Basic frame setup
     spreadsheetFrame:SetSize(600, 400)
+    self:ApplySavedPosition()
     spreadsheetFrame:SetFrameStrata("HIGH")
     spreadsheetFrame:SetFrameLevel(1000)
     spreadsheetFrame:SetMovable(true)
     spreadsheetFrame:EnableMouse(true)
     spreadsheetFrame:EnableKeyboard(true)
     spreadsheetFrame:RegisterForDrag("LeftButton")
-    spreadsheetFrame:SetPoint("CENTER")
 
     spreadsheetFrame:SetScript("OnDragStart", function(self)
         if self.StartMoving then
@@ -1165,6 +1241,7 @@ function UI.Spreadsheet:Create()
         if self.StopMovingOrSizing then
             self:StopMovingOrSizing()
         end
+        UI.Spreadsheet:PersistPosition()
     end)
 
     -- Title
@@ -1597,6 +1674,15 @@ local function CheckNewBuffs(unit)
 end
 
 -- Function to check appropriate units based on group state
+local function UpdateLogLevelDropdown(dropdown, level)
+    if not dropdown then return end
+
+    UIDropDownMenu_SetSelectedValue(dropdown, level)
+    if UIDropDownMenu_SetText then
+        UIDropDownMenu_SetText(dropdown, GetLogLevelDisplay(level))
+    end
+end
+
 function UI.Options:Refresh()
     if not optionsPanel then return end
 
@@ -1614,16 +1700,14 @@ function UI.Options:Refresh()
         end
     end
 
-    if optionsPanel.logLevelDropdown then
-        UIDropDownMenu_SetSelectedValue(optionsPanel.logLevelDropdown, activeLogLevel)
-        if UIDropDownMenu_SetText then
-            UIDropDownMenu_SetText(optionsPanel.logLevelDropdown, GetLogLevelDisplay(activeLogLevel))
-        end
-    end
+    UpdateLogLevelDropdown(optionsPanel.logLevelDropdown, activeLogLevel)
 end
 
 local function UpdateOptionsPanel()
-    UI.Options:Refresh()
+    -- Only refresh if the options panel is visible or being shown
+    if optionsPanel and (optionsPanel:IsVisible() or InterfaceOptionsFrame and InterfaceOptionsFrame:IsVisible()) then
+        UI.Options:Refresh()
+    end
 end
 
 local function OpenOptionsInterface()
@@ -1670,6 +1754,13 @@ function UI.Minimap:UpdateIconState()
         minimapIcon.texture:SetDesaturated(false)
     else
         minimapIcon.texture:SetDesaturated(true)
+    end
+end
+
+function UI.Minimap:Dispose()
+    if minimapIcon then
+        minimapIcon:Hide()
+        minimapIcon = nil
     end
 end
 
