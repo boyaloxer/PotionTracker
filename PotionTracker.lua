@@ -271,7 +271,6 @@ local buffHistory = {}
 local previousBuffs = {}
 local dropDown = nil  -- Move dropDown to global scope
 local optionsPanel = nil
-local unitInitialized = {} -- Track which units have been initialized
 
 UI.Minimap.shapeFallbacks = {
     ROUND = { true, true, true, true },
@@ -422,7 +421,6 @@ function UI.Minimap:InitializeMenu(frame, level, menuList)
     info.func = function()
         -- Clear both in-memory and saved data
         buffHistory = {}
-        unitInitialized = {} -- Reset initialization tracking
         PotionTrackerDB.buffHistory = {}
         PotionTrackerDB.exportedCSV = nil
         PotionTrackerDB.exportedDetailedCSV = nil
@@ -808,22 +806,6 @@ local function BuildSortedBuffList()
     return list
 end
 
-local function BuildCategoryList()
-    local categories = {}
-    local seen = {}
-
-    for _, buff in pairs(availableBuffs) do
-        local category = buff.category or "Other Buffs"
-        if not seen[category] then
-            seen[category] = true
-            table.insert(categories, category)
-        end
-    end
-
-    table.sort(categories)
-    return categories
-end
-
 local function GetDefaultBuffState(spellId)
     if defaultTrackedBuffs[spellId] ~= nil then
         return defaultTrackedBuffs[spellId]
@@ -912,7 +894,7 @@ function UI.BuffConfig:Create()
     buffConfigFrame = CreateFrame("Frame", "PotionTrackerBuffConfigFrame", UIParent, WithBackdrop("DialogBoxFrame"))
 
     -- Basic frame setup
-    buffConfigFrame:SetSize(440, 520)
+    buffConfigFrame:SetSize(400, 500)
     self:ApplySavedPosition()
     buffConfigFrame:SetFrameStrata("HIGH")
     buffConfigFrame:SetFrameLevel(1000)
@@ -920,10 +902,6 @@ function UI.BuffConfig:Create()
     buffConfigFrame:EnableMouse(true)
     buffConfigFrame:EnableKeyboard(true)
     buffConfigFrame:RegisterForDrag("LeftButton")
-    buffConfigFrame.filters = {
-        search = "",
-        category = "ALL",
-    }
 
     buffConfigFrame:SetScript("OnDragStart", function(self)
         if self.StartMoving then
@@ -950,145 +928,33 @@ function UI.BuffConfig:Create()
         buffConfigFrame:Hide()
     end)
 
-    -- Filter controls
-    local searchLabel = buffConfigFrame:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
-    searchLabel:SetPoint("TOPLEFT", 20, -60)
-    searchLabel:SetText("Search buffs")
-
-    local searchBox = CreateFrame("EditBox", "PotionTrackerBuffSearchBox", buffConfigFrame, "InputBoxTemplate")
-    searchBox:SetSize(200, 24)
-    searchBox:SetPoint("TOPLEFT", searchLabel, "BOTTOMLEFT", 0, -4)
-    searchBox:SetAutoFocus(false)
-    searchBox:SetMaxLetters(60)
-    searchBox:SetTextInsets(6, 6, 2, 2)
-    searchBox:SetScript("OnEnterPressed", function(self)
-        self:ClearFocus()
-    end)
-    searchBox:SetScript("OnEscapePressed", function(self)
-        self:SetText("")
-        self:ClearFocus()
-    end)
-    searchBox:SetScript("OnEditFocusGained", function(self)
-        self:HighlightText()
-    end)
-    searchBox:SetScript("OnTextChanged", function(self)
-        buffConfigFrame.filters.search = self:GetText() or ""
-        buffConfigFrame:ApplyFilters()
-    end)
-    searchBox:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:SetText("Filter the list by spell name or spell ID.", 1, 1, 1, true)
-        GameTooltip:AddLine("Leave empty to show every tracked potion.", 0.8, 0.8, 0.8, true)
-        GameTooltip:Show()
-    end)
-    searchBox:SetScript("OnLeave", GameTooltip_Hide)
-    buffConfigFrame.searchBox = searchBox
-
-    local categoryLabel = buffConfigFrame:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
-    categoryLabel:SetPoint("TOPLEFT", searchLabel, "TOPRIGHT", 24, 0)
-    categoryLabel:SetText("Category")
-
-    local categoryDropdown = CreateFrame("Frame", "PotionTrackerBuffCategoryDropdown", buffConfigFrame, WithBackdrop("UIDropDownMenuTemplate"))
-    categoryDropdown:SetPoint("TOPLEFT", categoryLabel, "BOTTOMLEFT", -16, -6)
-    UIDropDownMenu_SetWidth(categoryDropdown, 160)
-    buffConfigFrame.categoryDropdown = categoryDropdown
-
-    local categoryOptions = BuildCategoryList()
-    table.insert(categoryOptions, 1, "All Categories")
-    buffConfigFrame.categoryOptions = categoryOptions
-
-    UIDropDownMenu_Initialize(categoryDropdown, function(_, level)
-        if not level then
-            return
-        end
-
-        for index, category in ipairs(categoryOptions) do
-            local value = (index == 1) and "ALL" or category
-            local info = UIDropDownMenu_CreateInfo()
-            info.text = category
-            info.value = value
-            info.func = function()
-                buffConfigFrame.filters.category = value
-                UIDropDownMenu_SetSelectedValue(categoryDropdown, value)
-                if UIDropDownMenu_SetText then
-                    UIDropDownMenu_SetText(categoryDropdown, category)
-                elseif categoryDropdown.Text then
-                    categoryDropdown.Text:SetText(category)
-                end
-                buffConfigFrame:ApplyFilters()
-            end
-            info.checked = (buffConfigFrame.filters.category == value)
-            UIDropDownMenu_AddButton(info, level)
-        end
-    end)
-
-    UIDropDownMenu_SetSelectedValue(categoryDropdown, buffConfigFrame.filters.category)
-    if UIDropDownMenu_SetText then
-        UIDropDownMenu_SetText(categoryDropdown, categoryOptions[1])
-    elseif categoryDropdown.Text then
-        categoryDropdown.Text:SetText(categoryOptions[1])
-    end
-
-    local dropdownButton = _G[categoryDropdown:GetName() .. "Button"]
-    if dropdownButton then
-        dropdownButton:HookScript("OnEnter", function(button)
-            GameTooltip:SetOwner(button, "ANCHOR_RIGHT")
-            GameTooltip:SetText("Limit the list to a specific potion category.", 1, 1, 1, true)
-            GameTooltip:AddLine("Select 'All Categories' to restore the full list.", 0.8, 0.8, 0.8, true)
-            GameTooltip:Show()
-        end)
-        dropdownButton:HookScript("OnLeave", GameTooltip_Hide)
-    end
-
-    local filterStatus = buffConfigFrame:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-    filterStatus:SetPoint("TOPLEFT", searchBox, "BOTTOMLEFT", 0, -10)
-    filterStatus:SetWidth(360)
-    filterStatus:SetJustifyH("LEFT")
-    filterStatus:SetTextColor(0.8, 0.8, 0.8)
-    buffConfigFrame.filterStatus = filterStatus
-
     -- Scrollable buff list
     local scrollFrame = CreateFrame("ScrollFrame", "PotionTrackerBuffScrollFrame", buffConfigFrame, WithBackdrop("UIPanelScrollFrameTemplate"))
-    scrollFrame:SetPoint("TOPLEFT", 20, -170)
+    scrollFrame:SetPoint("TOPLEFT", 20, -60)
     scrollFrame:SetPoint("BOTTOMRIGHT", -45, 90)
 
     local content = CreateFrame("Frame", nil, scrollFrame)
     content:SetSize(1, 1)
     scrollFrame:SetScrollChild(content)
-    buffConfigFrame.content = content
 
     local sortedBuffs = BuildSortedBuffList()
-    buffConfigFrame.sortedBuffs = sortedBuffs
-    buffConfigFrame.totalBuffs = #sortedBuffs
-    buffConfigFrame.categoryHeaders = {}
-
+    local yOffset = 0
+    local currentCategory = nil
     local checkboxes = {}
-    local entries = {}
-
-    local noResultsText = content:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-    noResultsText:SetTextColor(0.8, 0.8, 0.8)
-    noResultsText:SetJustifyH("LEFT")
-    noResultsText:SetText("No buffs match the current filters")
-    noResultsText:Hide()
-    buffConfigFrame.noResultsText = noResultsText
-
-    local function ShowBuffTooltip(frame, buff)
-        GameTooltip:SetOwner(frame, "ANCHOR_RIGHT")
-        GameTooltip:SetText(buff.name, 1, 1, 1, true)
-        GameTooltip:AddLine(string.format("Spell ID: %d", buff.spellId), 0.8, 0.8, 0.8)
-        local defaultState = GetDefaultBuffState(buff.spellId) and "Tracked" or "Not tracked"
-        GameTooltip:AddLine("Default: " .. defaultState, 0.6, 0.6, 0.6)
-        GameTooltip:Show()
-    end
 
     for _, buff in ipairs(sortedBuffs) do
-        local row = CreateFrame("Frame", nil, content)
-        row:SetSize(320, 26)
-        row.buff = buff
-        row:EnableMouse(true)
+        if buff.category ~= currentCategory then
+            currentCategory = buff.category
+            local header = content:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+            header:SetPoint("TOPLEFT", 0, yOffset)
+            header:SetText(currentCategory)
+            header:SetTextColor(1, 0.82, 0)
+            header:SetJustifyH("LEFT")
+            yOffset = yOffset - 20
+        end
 
-        local checkbox = CreateFrame("CheckButton", nil, row)
-        checkbox:SetPoint("LEFT", 0, 0)
+        local checkbox = CreateFrame("CheckButton", nil, content)
+        checkbox:SetPoint("TOPLEFT", 0, yOffset)
         checkbox:SetSize(24, 24)
 
         local normal = checkbox:CreateTexture(nil, "ARTWORK")
@@ -1111,45 +977,27 @@ function UI.BuffConfig:Create()
         checkbox:SetChecked(isChecked)
         checkbox.initialState = isChecked
 
-        local label = row:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+        local label = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
         label:SetPoint("LEFT", checkbox, "RIGHT", 10, 0)
         label:SetText(buff.name)
         label:SetJustifyH("LEFT")
-        label:SetWidth(260)
+        label:SetTextColor(1, 1, 1, 1)
+        label:SetWidth(250)
         label:SetWordWrap(false)
 
-        row.checkbox = checkbox
-        row.label = label
-
-        row:SetScript("OnEnter", function(frame)
-            ShowBuffTooltip(frame, buff)
-        end)
-        row:SetScript("OnLeave", GameTooltip_Hide)
-
-        checkbox:SetScript("OnEnter", function(frame)
-            ShowBuffTooltip(frame, buff)
-        end)
-        checkbox:SetScript("OnLeave", GameTooltip_Hide)
-
-        row:SetScript("OnMouseDown", function(_, button)
-            if button == "LeftButton" then
-                checkbox:Click()
-            end
-        end)
-
         checkboxes[buff.spellId] = checkbox
-        table.insert(entries, row)
+        yOffset = yOffset - 28
     end
 
-    content:SetWidth(320)
+    content:SetWidth(280)
+    content:SetHeight(math.max(1, -yOffset))
 
-    -- Store checkboxes and rows for later use
+    -- Store checkboxes for later use
     buffConfigFrame.checkboxes = checkboxes
-    buffConfigFrame.entries = entries
 
     local statusText = buffConfigFrame:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
     statusText:SetPoint("BOTTOM", 0, 60)
-    statusText:SetWidth(320)
+    statusText:SetWidth(280)
     statusText:SetJustifyH("CENTER")
 
     -- Save and reset buttons
@@ -1165,12 +1013,10 @@ function UI.BuffConfig:Create()
 
     local function UpdateChangeState(message, r, g, b)
         local hasChanges = false
-        for _, row in ipairs(entries) do
-            if row.checkbox:GetChecked() ~= row.checkbox.initialState then
+        for _, checkbox in pairs(checkboxes) do
+            if checkbox:GetChecked() ~= checkbox.initialState then
                 hasChanges = true
-                row.label:SetTextColor(1, 0.82, 0)
-            else
-                row.label:SetTextColor(1, 1, 1, 1)
+                break
             end
         end
 
@@ -1196,8 +1042,8 @@ function UI.BuffConfig:Create()
         UpdateChangeState(message, r, g, b)
     end
 
-    for _, row in ipairs(entries) do
-        row.checkbox:SetScript("OnClick", function()
+    for _, checkbox in pairs(checkboxes) do
+        checkbox:SetScript("OnClick", function()
             UpdateChangeState()
         end)
     end
@@ -1228,89 +1074,6 @@ function UI.BuffConfig:Create()
         UpdateChangeState("Defaults restored (save to apply)", 1, 0.82, 0)
     end)
 
-    function buffConfigFrame:ApplyFilters()
-        local filters = self.filters or {}
-        local categoryFilter = filters.category or "ALL"
-        local searchText = filters.search or ""
-        local normalizedSearch = searchText ~= "" and string.lower(searchText) or nil
-
-        local yOffset = 0
-        local visibleCount = 0
-        local currentCategory = nil
-
-        for _, header in pairs(self.categoryHeaders) do
-            header:Hide()
-        end
-
-        for _, row in ipairs(self.entries) do
-            row:Hide()
-        end
-
-        for _, row in ipairs(self.entries) do
-            local buff = row.buff
-            local matches = true
-
-            if categoryFilter ~= "ALL" and buff.category ~= categoryFilter then
-                matches = false
-            end
-
-            if matches and normalizedSearch then
-                local nameMatch = string.find(string.lower(buff.name), normalizedSearch, 1, true)
-                local idMatch = tostring(buff.spellId):find(normalizedSearch, 1, true)
-                matches = (nameMatch ~= nil) or (idMatch ~= nil)
-            end
-
-            if matches then
-                if buff.category ~= currentCategory then
-                    currentCategory = buff.category
-                    local header = self.categoryHeaders[currentCategory]
-                    if not header then
-                        header = self.content:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-                        header:SetTextColor(1, 0.82, 0)
-                        header:SetJustifyH("LEFT")
-                        self.categoryHeaders[currentCategory] = header
-                    end
-                    header:ClearAllPoints()
-                    header:SetPoint("TOPLEFT", 0, yOffset)
-                    header:SetText(currentCategory)
-                    header:Show()
-                    yOffset = yOffset - 20
-                end
-
-                row:ClearAllPoints()
-                row:SetPoint("TOPLEFT", 0, yOffset)
-                row:Show()
-                yOffset = yOffset - row:GetHeight() - 4
-                visibleCount = visibleCount + 1
-            end
-        end
-
-        if visibleCount == 0 then
-            self.noResultsText:Show()
-            self.noResultsText:ClearAllPoints()
-            self.noResultsText:SetPoint("TOPLEFT", 0, 0)
-            yOffset = -24
-        else
-            self.noResultsText:Hide()
-        end
-
-        self.content:SetHeight(math.max(1, -yOffset))
-
-        if self.filterStatus then
-            local message = string.format("Showing %d of %d buffs", visibleCount, self.totalBuffs)
-            if categoryFilter ~= "ALL" then
-                message = message .. string.format(" in %s", categoryFilter)
-            end
-            if normalizedSearch then
-                message = message .. string.format(" matching \"%s\"", searchText)
-            end
-            self.filterStatus:SetText(message)
-        end
-    end
-
-    buffConfigFrame:ApplyFilters()
-    UpdateChangeState("No pending changes", 0.7, 0.9, 0.7)
-
     buffConfigFrame:SetScript("OnKeyDown", function(self, key)
         if key == "ESCAPE" then
             self:Hide()
@@ -1325,6 +1088,8 @@ function UI.BuffConfig:Create()
     buffConfigFrame:SetScript("OnHide", function()
         PlayUISound("IG_MAINMENU_CLOSE", "igMainMenuClose")
     end)
+
+    UpdateChangeState("No pending changes", 0.7, 0.9, 0.7)
 
     Debug("Buff config frame creation completed")
     self.frame = buffConfigFrame
@@ -1364,13 +1129,9 @@ function UI.BuffConfig:Show()
         buffConfigFrame:ResetInitialStates("No pending changes", 0.7, 0.9, 0.7)
     end
 
-    if buffConfigFrame.ApplyFilters then
-        buffConfigFrame:ApplyFilters()
-    end
-
     -- Show the frame
     buffConfigFrame:Show()
-
+    
     Debug("Buff config frame should now be visible")
     Print("Buff configuration window opened")
 end
@@ -1384,7 +1145,7 @@ function UI.Spreadsheet:Create()
     end
 
     spreadsheetFrame = CreateFrame("Frame", "PotionTrackerSpreadsheetFrame", UIParent, WithBackdrop("DialogBoxFrame"))
-
+    
     -- Basic frame setup
     spreadsheetFrame:SetSize(600, 400)
     spreadsheetFrame:SetFrameStrata("HIGH")
@@ -1394,9 +1155,6 @@ function UI.Spreadsheet:Create()
     spreadsheetFrame:EnableKeyboard(true)
     spreadsheetFrame:RegisterForDrag("LeftButton")
     spreadsheetFrame:SetPoint("CENTER")
-    spreadsheetFrame:SetResizable(true)
-    spreadsheetFrame:SetMinResize(420, 320)
-    spreadsheetFrame:SetMaxResize(1200, 800)
 
     spreadsheetFrame:SetScript("OnDragStart", function(self)
         if self.StartMoving then
@@ -1425,76 +1183,11 @@ function UI.Spreadsheet:Create()
     -- Scrollable content area
     local scrollFrame = CreateFrame("ScrollFrame", "PotionTrackerSpreadsheetScrollFrame", spreadsheetFrame, WithBackdrop("UIPanelScrollFrameTemplate"))
     scrollFrame:SetPoint("TOPLEFT", 20, -60)
-    scrollFrame:SetPoint("BOTTOMRIGHT", -45, 40)
-    scrollFrame:EnableMouseWheel(true)
-    scrollFrame:SetScript("OnMouseWheel", function(self, delta)
-        if UIPanelScrollFrameTemplate_OnMouseWheel then
-            UIPanelScrollFrameTemplate_OnMouseWheel(self, delta)
-        end
-    end)
+    scrollFrame:SetPoint("BOTTOMRIGHT", -45, 20)
 
     local content = CreateFrame("Frame", nil, scrollFrame)
     content:SetSize(1, 1)
-    content:SetPoint("TOPLEFT", scrollFrame, "TOPLEFT", 0, 0)
     scrollFrame:SetScrollChild(content)
-
-    spreadsheetFrame.horizontalOffset = 0
-    function spreadsheetFrame:SetHorizontalOffset(offset)
-        offset = math.max(0, offset or 0)
-        self.horizontalOffset = offset
-        content:ClearAllPoints()
-        content:SetPoint("TOPLEFT", scrollFrame, "TOPLEFT", -offset, 0)
-    end
-
-    local resizeButton = CreateFrame("Button", nil, spreadsheetFrame)
-    resizeButton:SetSize(16, 16)
-    resizeButton:SetPoint("BOTTOMRIGHT", -4, 4)
-    resizeButton:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
-    resizeButton:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
-    resizeButton:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
-    resizeButton:SetScript("OnMouseDown", function(self)
-        local parent = self:GetParent()
-        if parent and parent.StartSizing then
-            parent:StartSizing("BOTTOMRIGHT")
-        end
-    end)
-    resizeButton:SetScript("OnMouseUp", function(self)
-        local parent = self:GetParent()
-        if parent and parent.StopMovingOrSizing then
-            parent:StopMovingOrSizing()
-        end
-    end)
-
-    local horizontalSlider = CreateFrame("Slider", "PotionTrackerSpreadsheetHorizontalSlider", spreadsheetFrame, "OptionsSliderTemplate")
-    horizontalSlider:SetOrientation("HORIZONTAL")
-    horizontalSlider:SetHeight(14)
-    horizontalSlider:SetPoint("TOPLEFT", scrollFrame, "BOTTOMLEFT", 0, -10)
-    horizontalSlider:SetPoint("TOPRIGHT", scrollFrame, "BOTTOMRIGHT", 0, -10)
-    horizontalSlider:SetMinMaxValues(0, 0)
-    horizontalSlider:SetValueStep(1)
-    horizontalSlider:Hide()
-    spreadsheetFrame.horizontalSlider = horizontalSlider
-
-    if horizontalSlider.GetName then
-        local name = horizontalSlider:GetName()
-        if name then
-            local low = _G[name .. "Low"]
-            local high = _G[name .. "High"]
-            local text = _G[name .. "Text"]
-            if low then low:Hide() end
-            if high then high:Hide() end
-            if text then text:Hide() end
-        end
-    end
-
-    horizontalSlider:SetScript("OnValueChanged", function(self, value)
-        if self.isUpdating then
-            return
-        end
-        if spreadsheetFrame.SetHorizontalOffset then
-            spreadsheetFrame:SetHorizontalOffset(value)
-        end
-    end)
 
     -- Store references for updates
     spreadsheetFrame.scrollFrame = scrollFrame
@@ -1503,12 +1196,6 @@ function UI.Spreadsheet:Create()
     spreadsheetFrame:SetScript("OnKeyDown", function(self, key)
         if key == "ESCAPE" then
             self:Hide()
-        end
-    end)
-
-    spreadsheetFrame:SetScript("OnSizeChanged", function(self)
-        if self:IsShown() then
-            UI.Spreadsheet:UpdateData()
         end
     end)
 
@@ -1522,9 +1209,7 @@ function UI.Spreadsheet:UpdateData()
     end
 
     local content = spreadsheetFrame.content
-    local scrollFrame = spreadsheetFrame.scrollFrame
-    local horizontalSlider = spreadsheetFrame.horizontalSlider
-
+    
     -- Clear existing content
     for i = content:GetNumChildren(), 1, -1 do
         local child = select(i, content:GetChildren())
@@ -1532,28 +1217,11 @@ function UI.Spreadsheet:UpdateData()
         child:SetParent(nil)
     end
 
-    if horizontalSlider then
-        horizontalSlider.isUpdating = true
-        horizontalSlider:SetMinMaxValues(0, 0)
-        horizontalSlider:SetValue(horizontalSlider:GetValue() or 0)
-        horizontalSlider:Hide()
-        horizontalSlider.isUpdating = false
-    end
-
-    if spreadsheetFrame.isUpdatingData then
-        return
-    end
-
-    spreadsheetFrame.isUpdatingData = true
-    local previousOffset = spreadsheetFrame.horizontalOffset or 0
-
     if not PotionTrackerDB or not PotionTrackerDB.buffHistory or #PotionTrackerDB.buffHistory == 0 then
         local noDataText = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
         noDataText:SetPoint("CENTER", 0, 0)
         noDataText:SetText("No buff usage data available")
         noDataText:SetTextColor(0.7, 0.7, 0.7)
-        spreadsheetFrame:SetHorizontalOffset(0)
-        spreadsheetFrame.isUpdatingData = nil
         return
     end
 
@@ -1597,29 +1265,14 @@ function UI.Spreadsheet:UpdateData()
         noDataText:SetPoint("CENTER", 0, 0)
         noDataText:SetText("No buff usage data available")
         noDataText:SetTextColor(0.7, 0.7, 0.7)
-        spreadsheetFrame:SetHorizontalOffset(0)
-        spreadsheetFrame.isUpdatingData = nil
         return
     end
 
     -- Create table headers and data
+    local cellWidth = 120
+    local cellHeight = 20
     local startX = 10
     local startY = -10
-    local minCellWidth = 90
-    local totalColumns = #sortedBuffs + 1
-    local availableWidth = 0
-    if scrollFrame and scrollFrame.GetWidth then
-        availableWidth = math.max((scrollFrame:GetWidth() or 0) - startX - 20, 0)
-    end
-    local cellWidth = minCellWidth
-    if availableWidth > 0 then
-        local computed = math.floor(availableWidth / totalColumns)
-        if computed >= minCellWidth then
-            cellWidth = computed
-        end
-    end
-
-    local cellHeight = 20
 
     -- Header row
     local headerBg = content:CreateTexture(nil, "BACKGROUND")
@@ -1683,32 +1336,6 @@ function UI.Spreadsheet:UpdateData()
     local totalHeight = startY + ((#allPlayers + 1) * cellHeight) + 20
     content:SetWidth(totalWidth)
     content:SetHeight(totalHeight)
-
-    if horizontalSlider then
-        local overflow = 0
-        if scrollFrame and scrollFrame.GetWidth then
-            overflow = math.max(0, totalWidth - scrollFrame:GetWidth())
-        end
-
-        if overflow > 0 then
-            horizontalSlider.isUpdating = true
-            horizontalSlider:SetMinMaxValues(0, overflow)
-            local currentOffset = math.min(previousOffset, overflow)
-            spreadsheetFrame:SetHorizontalOffset(currentOffset)
-            horizontalSlider:SetValue(currentOffset)
-            horizontalSlider:Show()
-            horizontalSlider.isUpdating = false
-        else
-            horizontalSlider.isUpdating = true
-            horizontalSlider:SetMinMaxValues(0, 0)
-            horizontalSlider:SetValue(0)
-            horizontalSlider:Hide()
-            spreadsheetFrame:SetHorizontalOffset(0)
-            horizontalSlider.isUpdating = false
-        end
-    end
-
-    spreadsheetFrame.isUpdatingData = nil
 end
 
 function UI.Spreadsheet:Show()
@@ -1848,39 +1475,50 @@ local function InitializeUnitBuffs(unit)
         return
     end
 
-    Debug("Establishing baseline for " .. unitName)
+    Debug("Checking buffs for " .. unitName)
 
     lastUnitUpdate[unit] = 0
-    unitInitialized[unit] = true
 
-    -- Check each tracked buff and establish baseline (don't count as gains)
+    -- Check each tracked buff directly
     for spellId, buffName in pairs(trackedBuffs) do
         local auraName = GetSpellInfo(spellId) or buffName
         Debug("Checking for buff: " .. tostring(auraName))
         local name, _, _, _, duration = AuraUtil.FindAuraByName(auraName, unit, "HELPFUL")
         if name then
-            Debug("Found existing buff: " .. name .. " - establishing baseline")
+            Debug("Found tracked buff at load: " .. name)
 
-            -- Print to chat (informational only, not counted)
+            -- Print to chat
             local timeStr = ""
             if duration and duration > 0 then
                 local minutes = math.floor(duration / 60)
                 local seconds = duration % 60
                 timeStr = string.format(" (%dm %ds)", minutes, seconds)
             end
-            Print(unitName .. " has " .. name .. timeStr .. " (baseline)")
+            Print(unitName .. " has " .. name .. timeStr)
 
-            -- Mark as previously lost so next gain will be counted
-            if not previousBuffs[unit] then
-                previousBuffs[unit] = {}
-            end
-            -- Don't add to previousBuffs yet - this will happen in CheckNewBuffs
+            -- Record the event immediately
+            local timestamp = time()
+            local entry = {
+                timestamp = timestamp,
+                date = date("%Y-%m-%d %H:%M:%S", timestamp),
+                unit = unitName,
+                buff = name,
+                event = "BUFF_GAINED",
+                duration = duration or 0
+            }
+
+            -- Add directly to history
+            if not buffHistory then buffHistory = {} end
+            table.insert(buffHistory, entry)
+            if not PotionTrackerDB then PotionTrackerDB = {} end
+            PotionTrackerDB.buffHistory = buffHistory
+            EnforceHistoryLimit()
+            Debug("History size after initializing buff: " .. #buffHistory)
         end
     end
     
-    -- Initialize empty previous buffs - this ensures existing buffs will be detected as "gains" 
-    -- only after they're lost and reapplied
-    previousBuffs[unit] = {}
+    -- Store current state for future comparisons
+    previousBuffs[unit] = GetUnitBuffs(unit)
 end
 
 -- Function to add event to history
@@ -1943,11 +1581,7 @@ local function CheckNewBuffs(unit)
     -- Check for new buffs (only tracked ones)
     for buffName, buffInfo in pairs(currentBuffs) do
         if not previousBuffs[unit][buffName] then
-            -- Only count as gained if unit has been initialized (prevents counting existing buffs on reload)
-            -- OR if this is the first time we're seeing this unit (new player joined)
-            if unitInitialized[unit] then
-                RecordBuffEvent(unitName, buffName, "BUFF_GAINED", buffInfo.duration)
-            end
+            RecordBuffEvent(unitName, buffName, "BUFF_GAINED", buffInfo.duration)
         end
     end
     
@@ -2394,7 +2028,6 @@ SlashCmdList["POTIONTRACKER"] = function(msg)
     elseif command == "clear" then
         PotionTrackerDB.buffHistory = {}
         buffHistory = {}
-        unitInitialized = {} -- Reset initialization tracking
         PotionTrackerDB.exportedCSV = nil
         PotionTrackerDB.exportedDetailedCSV = nil
         Print("History cleared. Fresh data will be saved going forward.")
