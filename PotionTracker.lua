@@ -79,6 +79,7 @@ local UI = {
     Minimap = {},
     Options = {},
     BuffConfig = {},
+    Spreadsheet = {},
 }
 
 -- Helper function to get table size
@@ -129,63 +130,138 @@ ExportCSV = function()
         return
     end
 
-    -- Create CSV header
-    local csv = "Timestamp,Event,Unit,Buff,Target,Duration,EncounterID,TargetLevel,TargetClassification,TargetCount,TargetDetails\n"
-
-    -- Add each event
-    for _, event in ipairs(PotionTrackerDB.buffHistory) do
-        local timestamp = event.date or date("%Y-%m-%d %H:%M:%S", event.timestamp)
-        -- Escape any commas in the fields
-        local function escape(value)
-            if value == nil then
-                value = ""
-            end
-
-            if type(value) ~= "string" then
-                value = tostring(value)
-            end
-
-            if value:find('"') then
-                value = value:gsub('"', '""')
-            end
-
-            if value:find(",") or value:find("\n") or value:find('"') then
-                return '"' .. value .. '"'
-            end
-
-            return value
+    -- Helper function to escape CSV values
+    local function escape(value)
+        if value == nil then
+            value = ""
         end
 
-        -- Combine fields into CSV line
-        local line = string.format("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
-            escape(timestamp),
-            escape(event.event or ""),
-            escape(event.unit or ""),
-            escape(event.buff or ""),
-            escape(event.targetName or ""),
-            escape(event.duration and tostring(event.duration) or ""),
-            escape(event.encounterId or ""),
-            escape(event.targetLevel or ""),
-            escape(event.targetClassification or ""),
-            escape(event.targetCount or ""),
-            escape(FormatTargetDetails(event.targets))
-        )
+        if type(value) ~= "string" then
+            value = tostring(value)
+        end
 
-        csv = csv .. line
+        if value:find('"') then
+            value = value:gsub('"', '""')
+        end
+
+        if value:find(",") or value:find("\n") or value:find('"') then
+            return '"' .. value .. '"'
+        end
+
+        return value
     end
 
-    -- Save CSV data to SavedVariables (WoW addons cannot write files outside the game directory)
+    -- Create summary data structure
+    local playerBuffCounts = {}  -- [playerName][buffName] = count
+    local allPlayers = {}
+    local allBuffs = {}
+    local detailedData = {}
+
+    -- Process all events
+    for _, event in ipairs(PotionTrackerDB.buffHistory) do
+        local playerName = event.unit or "Unknown"
+        local buffName = event.buff or "Unknown"
+        local timestamp = event.date or date("%Y-%m-%d %H:%M:%S", event.timestamp)
+        
+        -- Initialize player data if needed
+        if not playerBuffCounts[playerName] then
+            playerBuffCounts[playerName] = {}
+            table.insert(allPlayers, playerName)
+        end
+        
+        -- Count buff usage (only count BUFF_GAINED events)
+        if event.event == "BUFF_GAINED" then
+            playerBuffCounts[playerName][buffName] = (playerBuffCounts[playerName][buffName] or 0) + 1
+            
+            -- Track unique buffs
+            if not allBuffs[buffName] then
+                allBuffs[buffName] = true
+            end
+        end
+        
+        -- Store detailed data
+        table.insert(detailedData, {
+            timestamp = timestamp,
+            event = event.event or "",
+            unit = playerName,
+            buff = buffName,
+            target = event.targetName or "",
+            duration = event.duration and tostring(event.duration) or "",
+            encounterId = event.encounterId or "",
+            targetLevel = event.targetLevel or "",
+            targetClassification = event.targetClassification or "",
+            targetCount = event.targetCount or "",
+            targetDetails = FormatTargetDetails(event.targets)
+        })
+    end
+
+    -- Sort players and buffs alphabetically
+    table.sort(allPlayers)
+    local sortedBuffs = {}
+    for buffName in pairs(allBuffs) do
+        table.insert(sortedBuffs, buffName)
+    end
+    table.sort(sortedBuffs)
+
+    -- Create summary CSV
+    local summaryCSV = {}
+    
+    -- Header row: Player, Buff1, Buff2, etc.
+    local headerRow = "Player"
+    for _, buffName in ipairs(sortedBuffs) do
+        headerRow = headerRow .. "," .. escape(buffName)
+    end
+    table.insert(summaryCSV, headerRow)
+    
+    -- Data rows: Player name, then counts for each buff
+    for _, playerName in ipairs(allPlayers) do
+        local dataRow = escape(playerName)
+        for _, buffName in ipairs(sortedBuffs) do
+            local count = playerBuffCounts[playerName][buffName] or 0
+            dataRow = dataRow .. "," .. count
+        end
+        table.insert(summaryCSV, dataRow)
+    end
+    
+    -- Join with actual line breaks
+    summaryCSV = table.concat(summaryCSV, "\n")
+
+    -- Create detailed CSV
+    local detailedCSV = {}
+    table.insert(detailedCSV, "Timestamp,Event,Unit,Buff,Target,Duration,EncounterID,TargetLevel,TargetClassification,TargetCount,TargetDetails")
+    
+    for _, event in ipairs(detailedData) do
+        local line = string.format("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s",
+            escape(event.timestamp),
+            escape(event.event),
+            escape(event.unit),
+            escape(event.buff),
+            escape(event.target),
+            escape(event.duration),
+            escape(event.encounterId),
+            escape(event.targetLevel),
+            escape(event.targetClassification),
+            escape(event.targetCount),
+            escape(event.targetDetails)
+        )
+        table.insert(detailedCSV, line)
+    end
+    
+    -- Join with actual line breaks
+    detailedCSV = table.concat(detailedCSV, "\n")
+
+    -- Save both exports to SavedVariables
     if not PotionTrackerDB then
         PotionTrackerDB = {}
     end
-    PotionTrackerDB.exportedCSV = csv
+    PotionTrackerDB.exportedCSV = summaryCSV
+    PotionTrackerDB.exportedDetailedCSV = detailedCSV
     
     Print("CSV data exported to SavedVariables!")
-    Print("To access your CSV data:")
-    Print("1. Use /pt showcsv to display the data in chat")
-    Print("2. Copy the data and save it as a .csv file")
-    Print("3. Or find it in your SavedVariables file after logout")
-    Print("   Location: WTF\\Account\\[AccountName]\\SavedVariables\\PotionTracker.lua")
+    Print("Two exports created:")
+    Print("1. Summary table (players vs buffs with counts)")
+    Print("2. Detailed data (all timestamps and events)")
+    Print("Use /pt showcsv for summary or /pt showdetailed for full data")
 end
 
 -- Initialize variables
@@ -195,6 +271,9 @@ local buffHistory = {}
 local previousBuffs = {}
 local dropDown = nil  -- Move dropDown to global scope
 local optionsPanel = nil
+
+-- Buff state tracking to prevent duplicate counting on reload
+local buffStates = {} -- [unit][buffName] = {isActive, lastSeen, hasBeenCounted}
 
 UI.Minimap.shapeFallbacks = {
     ROUND = { true, true, true, true },
@@ -323,6 +402,15 @@ function UI.Minimap:InitializeMenu(frame, level, menuList)
     
     info = UIDropDownMenu_CreateInfo()  -- Reset info table for next button
     info.notCheckable = true
+    info.text = "View Spreadsheet"
+    info.func = function()
+        UI.Spreadsheet:Show()
+        Debug("Spreadsheet menu option selected")
+    end
+    UIDropDownMenu_AddButton(info, level)
+    
+    info = UIDropDownMenu_CreateInfo()  -- Reset info table for next button
+    info.notCheckable = true
     info.text = "Export Data"
     info.func = function()
         ExportCSV()
@@ -336,8 +424,10 @@ function UI.Minimap:InitializeMenu(frame, level, menuList)
     info.func = function()
         -- Clear both in-memory and saved data
         buffHistory = {}
+        buffStates = {}  -- Clear buff state tracking
         PotionTrackerDB.buffHistory = {}
         PotionTrackerDB.exportedCSV = nil
+        PotionTrackerDB.exportedDetailedCSV = nil
         Print("History cleared. Fresh data will be saved going forward.")
     end
     UIDropDownMenu_AddButton(info, level)
@@ -1050,6 +1140,218 @@ function UI.BuffConfig:Show()
     Print("Buff configuration window opened")
 end
 
+-- Spreadsheet UI for viewing buff usage data
+local spreadsheetFrame = nil
+
+function UI.Spreadsheet:Create()
+    if spreadsheetFrame then
+        return spreadsheetFrame
+    end
+
+    spreadsheetFrame = CreateFrame("Frame", "PotionTrackerSpreadsheetFrame", UIParent, WithBackdrop("DialogBoxFrame"))
+    
+    -- Basic frame setup
+    spreadsheetFrame:SetSize(600, 400)
+    spreadsheetFrame:SetFrameStrata("HIGH")
+    spreadsheetFrame:SetFrameLevel(1000)
+    spreadsheetFrame:SetMovable(true)
+    spreadsheetFrame:EnableMouse(true)
+    spreadsheetFrame:EnableKeyboard(true)
+    spreadsheetFrame:RegisterForDrag("LeftButton")
+    spreadsheetFrame:SetPoint("CENTER")
+
+    spreadsheetFrame:SetScript("OnDragStart", function(self)
+        if self.StartMoving then
+            self:StartMoving()
+        end
+    end)
+    spreadsheetFrame:SetScript("OnDragStop", function(self)
+        if self.StopMovingOrSizing then
+            self:StopMovingOrSizing()
+        end
+    end)
+
+    -- Title
+    local title = spreadsheetFrame:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
+    title:SetPoint("TOP", 0, -20)
+    title:SetText("PotionTracker - Usage Summary")
+    title:SetTextColor(1, 1, 1, 1)
+
+    -- Close button
+    local closeButton = CreateFrame("Button", nil, spreadsheetFrame, "UIPanelCloseButton")
+    closeButton:SetPoint("TOPRIGHT", 2, 2)
+    closeButton:SetScript("OnClick", function()
+        spreadsheetFrame:Hide()
+    end)
+
+    -- Scrollable content area
+    local scrollFrame = CreateFrame("ScrollFrame", "PotionTrackerSpreadsheetScrollFrame", spreadsheetFrame, WithBackdrop("UIPanelScrollFrameTemplate"))
+    scrollFrame:SetPoint("TOPLEFT", 20, -60)
+    scrollFrame:SetPoint("BOTTOMRIGHT", -45, 20)
+
+    local content = CreateFrame("Frame", nil, scrollFrame)
+    content:SetSize(1, 1)
+    scrollFrame:SetScrollChild(content)
+
+    -- Store references for updates
+    spreadsheetFrame.scrollFrame = scrollFrame
+    spreadsheetFrame.content = content
+
+    spreadsheetFrame:SetScript("OnKeyDown", function(self, key)
+        if key == "ESCAPE" then
+            self:Hide()
+        end
+    end)
+
+    self.frame = spreadsheetFrame
+    return spreadsheetFrame
+end
+
+function UI.Spreadsheet:UpdateData()
+    if not spreadsheetFrame then
+        self:Create()
+    end
+
+    local content = spreadsheetFrame.content
+    
+    -- Clear existing content
+    for i = content:GetNumChildren(), 1, -1 do
+        local child = select(i, content:GetChildren())
+        child:Hide()
+        child:SetParent(nil)
+    end
+
+    if not PotionTrackerDB or not PotionTrackerDB.buffHistory or #PotionTrackerDB.buffHistory == 0 then
+        local noDataText = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+        noDataText:SetPoint("CENTER", 0, 0)
+        noDataText:SetText("No buff usage data available")
+        noDataText:SetTextColor(0.7, 0.7, 0.7)
+        return
+    end
+
+    -- Create summary data structure
+    local playerBuffCounts = {}
+    local allPlayers = {}
+    local allBuffs = {}
+
+    -- Process all events
+    for _, event in ipairs(PotionTrackerDB.buffHistory) do
+        local playerName = event.unit or "Unknown"
+        local buffName = event.buff or "Unknown"
+        
+        -- Initialize player data if needed
+        if not playerBuffCounts[playerName] then
+            playerBuffCounts[playerName] = {}
+            table.insert(allPlayers, playerName)
+        end
+        
+        -- Count buff usage (only count BUFF_GAINED events)
+        if event.event == "BUFF_GAINED" then
+            playerBuffCounts[playerName][buffName] = (playerBuffCounts[playerName][buffName] or 0) + 1
+            
+            -- Track unique buffs
+            if not allBuffs[buffName] then
+                allBuffs[buffName] = true
+            end
+        end
+    end
+
+    -- Sort players and buffs alphabetically
+    table.sort(allPlayers)
+    local sortedBuffs = {}
+    for buffName in pairs(allBuffs) do
+        table.insert(sortedBuffs, buffName)
+    end
+    table.sort(sortedBuffs)
+
+    if #allPlayers == 0 or #sortedBuffs == 0 then
+        local noDataText = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+        noDataText:SetPoint("CENTER", 0, 0)
+        noDataText:SetText("No buff usage data available")
+        noDataText:SetTextColor(0.7, 0.7, 0.7)
+        return
+    end
+
+    -- Create table headers and data
+    local cellWidth = 120
+    local cellHeight = 20
+    local startX = 10
+    local startY = -10
+
+    -- Header row
+    local headerBg = content:CreateTexture(nil, "BACKGROUND")
+    headerBg:SetColorTexture(0.3, 0.3, 0.3, 0.8)
+    headerBg:SetPoint("TOPLEFT", startX, startY)
+    headerBg:SetSize(cellWidth, cellHeight)
+
+    local playerHeader = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+    playerHeader:SetPoint("TOPLEFT", startX + 5, startY - 2)
+    playerHeader:SetText("Player")
+    playerHeader:SetTextColor(1, 1, 1)
+
+    -- Buff headers
+    for i, buffName in ipairs(sortedBuffs) do
+        local headerBg = content:CreateTexture(nil, "BACKGROUND")
+        headerBg:SetColorTexture(0.3, 0.3, 0.3, 0.8)
+        headerBg:SetPoint("TOPLEFT", startX + (i * cellWidth), startY)
+        headerBg:SetSize(cellWidth, cellHeight)
+
+        local buffHeader = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+        buffHeader:SetPoint("TOPLEFT", startX + (i * cellWidth) + 5, startY - 2)
+        buffHeader:SetText(buffName)
+        buffHeader:SetTextColor(1, 1, 1)
+        buffHeader:SetWidth(cellWidth - 10)
+        buffHeader:SetJustifyH("LEFT")
+    end
+
+    -- Data rows
+    for row, playerName in ipairs(allPlayers) do
+        local yPos = startY - (row * cellHeight) - cellHeight
+
+        -- Player name cell
+        local playerBg = content:CreateTexture(nil, "BACKGROUND")
+        playerBg:SetColorTexture(0.2, 0.2, 0.2, 0.6)
+        playerBg:SetPoint("TOPLEFT", startX, yPos)
+        playerBg:SetSize(cellWidth, cellHeight)
+
+        local playerText = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+        playerText:SetPoint("TOPLEFT", startX + 5, yPos - 2)
+        playerText:SetText(playerName)
+        playerText:SetTextColor(1, 1, 1)
+
+        -- Buff count cells
+        for col, buffName in ipairs(sortedBuffs) do
+            local count = playerBuffCounts[playerName][buffName] or 0
+            
+            local cellBg = content:CreateTexture(nil, "BACKGROUND")
+            cellBg:SetColorTexture(0.2, 0.2, 0.2, 0.6)
+            cellBg:SetPoint("TOPLEFT", startX + (col * cellWidth), yPos)
+            cellBg:SetSize(cellWidth, cellHeight)
+
+            local countText = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+            countText:SetPoint("TOPLEFT", startX + (col * cellWidth) + 5, yPos - 2)
+            countText:SetText(tostring(count))
+            countText:SetTextColor(0.8, 0.8, 1)
+        end
+    end
+
+    -- Set content size
+    local totalWidth = startX + ((#sortedBuffs + 1) * cellWidth) + 10
+    local totalHeight = startY + ((#allPlayers + 1) * cellHeight) + 20
+    content:SetWidth(totalWidth)
+    content:SetHeight(totalHeight)
+end
+
+function UI.Spreadsheet:Show()
+    if not spreadsheetFrame then
+        self:Create()
+    end
+    
+    self:UpdateData()
+    spreadsheetFrame:Show()
+    Print("Buff usage spreadsheet opened")
+end
+
 -- Table of tracked mobs/bosses
 local trackedMobs = {
     -- Molten Core
@@ -1164,7 +1466,7 @@ local function GetUnitBuffs(unit)
     return buffs
 end
 
--- Function to initialize buff tracking for a unit
+-- Function to initialize buff tracking for a unit (establishes baseline without counting)
 local function InitializeUnitBuffs(unit)
     if not UnitExists(unit) then
         Debug("Unit does not exist: " .. tostring(unit))
@@ -1177,45 +1479,46 @@ local function InitializeUnitBuffs(unit)
         return
     end
 
-    Debug("Checking buffs for " .. unitName)
+    Debug("Establishing buff baseline for " .. unitName)
 
     lastUnitUpdate[unit] = 0
 
-    -- Check each tracked buff directly
+    -- Initialize buff state tracking for this unit
+    if not buffStates[unit] then
+        buffStates[unit] = {}
+    end
+
+    -- Check each tracked buff and establish baseline state
     for spellId, buffName in pairs(trackedBuffs) do
         local auraName = GetSpellInfo(spellId) or buffName
         Debug("Checking for buff: " .. tostring(auraName))
         local name, _, _, _, duration = AuraUtil.FindAuraByName(auraName, unit, "HELPFUL")
+        
         if name then
-            Debug("Found tracked buff at load: " .. name)
-
-            -- Print to chat
+            Debug("Found existing buff: " .. name .. " - establishing baseline")
+            
+            -- Print to chat (informational only)
             local timeStr = ""
             if duration and duration > 0 then
                 local minutes = math.floor(duration / 60)
                 local seconds = duration % 60
                 timeStr = string.format(" (%dm %ds)", minutes, seconds)
             end
-            Print(unitName .. " has " .. name .. timeStr)
+            Print(unitName .. " has " .. name .. timeStr .. " (baseline)")
 
-            -- Record the event immediately
-            local timestamp = time()
-            local entry = {
-                timestamp = timestamp,
-                date = date("%Y-%m-%d %H:%M:%S", timestamp),
-                unit = unitName,
-                buff = name,
-                event = "BUFF_GAINED",
-                duration = duration or 0
+            -- Establish baseline state - mark as active but NOT counted
+            buffStates[unit][name] = {
+                isActive = true,
+                lastSeen = time(),
+                hasBeenCounted = false  -- Don't count existing buffs on reload
             }
-
-            -- Add directly to history
-            if not buffHistory then buffHistory = {} end
-            table.insert(buffHistory, entry)
-            if not PotionTrackerDB then PotionTrackerDB = {} end
-            PotionTrackerDB.buffHistory = buffHistory
-            EnforceHistoryLimit()
-            Debug("History size after initializing buff: " .. #buffHistory)
+        else
+            -- Mark as inactive
+            buffStates[unit][buffName] = {
+                isActive = false,
+                lastSeen = time(),
+                hasBeenCounted = false
+            }
         end
     end
     
@@ -1264,7 +1567,7 @@ local function RecordBuffEvent(unitName, buffName, eventType, duration)
     end
 end
 
--- Function to check for new buffs (optimized)
+-- Function to check for buff state changes (only counts actual changes)
 local function CheckNewBuffs(unit)
     if not UnitExists(unit) then return end
     
@@ -1277,24 +1580,55 @@ local function CheckNewBuffs(unit)
     local unitName = UnitName(unit)
     local currentBuffs = GetUnitBuffs(unit)
     
-    -- Initialize previous buffs for this unit if needed
-    previousBuffs[unit] = previousBuffs[unit] or {}
+    -- Initialize buff state tracking for this unit if needed
+    if not buffStates[unit] then
+        buffStates[unit] = {}
+    end
     
-    -- Check for new buffs (only tracked ones)
+    -- Check for buff state changes
     for buffName, buffInfo in pairs(currentBuffs) do
-        if not previousBuffs[unit][buffName] then
+        local currentState = buffStates[unit][buffName]
+        
+        if not currentState then
+            -- New buff we haven't seen before
+            buffStates[unit][buffName] = {
+                isActive = true,
+                lastSeen = currentTime,
+                hasBeenCounted = true
+            }
             RecordBuffEvent(unitName, buffName, "BUFF_GAINED", buffInfo.duration)
+            Debug("New buff detected: " .. buffName .. " on " .. unitName)
+            
+        elseif not currentState.isActive then
+            -- Buff was inactive, now active - this is a real gain
+            buffStates[unit][buffName] = {
+                isActive = true,
+                lastSeen = currentTime,
+                hasBeenCounted = true
+            }
+            RecordBuffEvent(unitName, buffName, "BUFF_GAINED", buffInfo.duration)
+            Debug("Buff gained: " .. buffName .. " on " .. unitName)
+        else
+            -- Buff is still active, just update timestamp
+            buffStates[unit][buffName].lastSeen = currentTime
         end
     end
     
-    -- Check for removed buffs (only tracked ones)
-    for buffName in pairs(previousBuffs[unit]) do
-        if not currentBuffs[buffName] then
+    -- Check for removed buffs
+    for buffName, state in pairs(buffStates[unit]) do
+        if state.isActive and not currentBuffs[buffName] then
+            -- Buff was active, now inactive - this is a real loss
+            buffStates[unit][buffName] = {
+                isActive = false,
+                lastSeen = currentTime,
+                hasBeenCounted = state.hasBeenCounted
+            }
             RecordBuffEvent(unitName, buffName, "BUFF_LOST", 0)
+            Debug("Buff lost: " .. buffName .. " on " .. unitName)
         end
     end
     
-    -- Update previous buffs
+    -- Update previous buffs for compatibility
     previousBuffs[unit] = currentBuffs
 end
 
@@ -1711,7 +2045,9 @@ SlashCmdList["POTIONTRACKER"] = function(msg)
         Print("/pt reload - Reload tracked buffs")
         Print("/pt hidetest - Hide test frame")
         Print("/pt log [level] - View or set log level")
-        Print("/pt showcsv - Display CSV data in chat (if file export failed)")
+        Print("/pt showcsv - Display summary table (players vs buffs)")
+        Print("/pt showdetailed - Display detailed timestamp data")
+        Print("/pt spreadsheet - Open built-in spreadsheet view")
         return
     end
 
@@ -1728,7 +2064,9 @@ SlashCmdList["POTIONTRACKER"] = function(msg)
     elseif command == "clear" then
         PotionTrackerDB.buffHistory = {}
         buffHistory = {}
+        buffStates = {}  -- Clear buff state tracking
         PotionTrackerDB.exportedCSV = nil
+        PotionTrackerDB.exportedDetailedCSV = nil
         Print("History cleared. Fresh data will be saved going forward.")
     elseif command == "stats" then
         local count = #(PotionTrackerDB.buffHistory or {})
@@ -1766,8 +2104,8 @@ SlashCmdList["POTIONTRACKER"] = function(msg)
         end
     elseif command == "showcsv" then
         if PotionTrackerDB and PotionTrackerDB.exportedCSV then
-            Print("=== POTIONTRACKER CSV EXPORT ===")
-            Print("Copy the data below and save it as a .csv file:")
+            Print("=== POTIONTRACKER SUMMARY TABLE ===")
+            Print("Copy the data below and save it as PotionTracker_Summary.csv:")
             Print("")
             
             -- Split CSV into lines and print each one
@@ -1781,13 +2119,39 @@ SlashCmdList["POTIONTRACKER"] = function(msg)
             end
             
             Print("")
-            Print("=== END CSV DATA ===")
+            Print("=== END SUMMARY TABLE ===")
             Print("Total lines: " .. #lines)
-            Print("Save this data as PotionTracker_Export.csv")
+            Print("This shows player usage counts for each buff")
         else
-            Print("No CSV data found in SavedVariables.")
+            Print("No summary data found in SavedVariables.")
             Print("Run /pt export first to generate CSV data.")
         end
+    elseif command == "showdetailed" then
+        if PotionTrackerDB and PotionTrackerDB.exportedDetailedCSV then
+            Print("=== POTIONTRACKER DETAILED DATA ===")
+            Print("Copy the data below and save it as PotionTracker_Detailed.csv:")
+            Print("")
+            
+            -- Split CSV into lines and print each one
+            local lines = {}
+            for line in PotionTrackerDB.exportedDetailedCSV:gmatch("[^\r\n]+") do
+                table.insert(lines, line)
+            end
+            
+            for i, line in ipairs(lines) do
+                Print(line)
+            end
+            
+            Print("")
+            Print("=== END DETAILED DATA ===")
+            Print("Total lines: " .. #lines)
+            Print("This shows all events with timestamps")
+        else
+            Print("No detailed data found in SavedVariables.")
+            Print("Run /pt export first to generate CSV data.")
+        end
+    elseif command == "spreadsheet" then
+        UI.Spreadsheet:Show()
     else
         Print("Unknown command. Type /pt help for options.", "WARN")
     end
