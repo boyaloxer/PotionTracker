@@ -1384,7 +1384,7 @@ function UI.Spreadsheet:Create()
     end
 
     spreadsheetFrame = CreateFrame("Frame", "PotionTrackerSpreadsheetFrame", UIParent, WithBackdrop("DialogBoxFrame"))
-    
+
     -- Basic frame setup
     spreadsheetFrame:SetSize(600, 400)
     spreadsheetFrame:SetFrameStrata("HIGH")
@@ -1394,6 +1394,21 @@ function UI.Spreadsheet:Create()
     spreadsheetFrame:EnableKeyboard(true)
     spreadsheetFrame:RegisterForDrag("LeftButton")
     spreadsheetFrame:SetPoint("CENTER")
+
+    if spreadsheetFrame.SetResizable then
+        spreadsheetFrame:SetResizable(true)
+    end
+
+    if spreadsheetFrame.SetResizeBounds then
+        spreadsheetFrame:SetResizeBounds(420, 320, 1200, 800)
+    else
+        if spreadsheetFrame.SetMinResize then
+            spreadsheetFrame:SetMinResize(420, 320)
+        end
+        if spreadsheetFrame.SetMaxResize then
+            spreadsheetFrame:SetMaxResize(1200, 800)
+        end
+    end
 
     spreadsheetFrame:SetScript("OnDragStart", function(self)
         if self.StartMoving then
@@ -1422,11 +1437,121 @@ function UI.Spreadsheet:Create()
     -- Scrollable content area
     local scrollFrame = CreateFrame("ScrollFrame", "PotionTrackerSpreadsheetScrollFrame", spreadsheetFrame, WithBackdrop("UIPanelScrollFrameTemplate"))
     scrollFrame:SetPoint("TOPLEFT", 20, -60)
-    scrollFrame:SetPoint("BOTTOMRIGHT", -45, 20)
+    scrollFrame:SetPoint("BOTTOMRIGHT", -45, 40)
+    if scrollFrame.EnableMouseWheel then
+        scrollFrame:EnableMouseWheel(true)
+    end
+    scrollFrame:SetScript("OnMouseWheel", function(self, delta)
+        if UIPanelScrollFrameTemplate_OnMouseWheel then
+            UIPanelScrollFrameTemplate_OnMouseWheel(self, delta)
+        else
+            local step = 20
+            if self.ScrollBar and self.ScrollBar.GetValueStep then
+                step = self.ScrollBar:GetValueStep() or step
+            end
+            local newValue = (self:GetVerticalScroll() or 0) - (delta * step)
+            newValue = math.max(0, math.min(newValue, self:GetVerticalScrollRange() or 0))
+            self:SetVerticalScroll(newValue)
+            if self.ScrollBar and self.ScrollBar.SetValue then
+                self.ScrollBar:SetValue(newValue)
+            end
+        end
+    end)
 
     local content = CreateFrame("Frame", nil, scrollFrame)
     content:SetSize(1, 1)
+    content:SetPoint("TOPLEFT", scrollFrame, "TOPLEFT", 0, 0)
     scrollFrame:SetScrollChild(content)
+
+    spreadsheetFrame.horizontalOffset = 0
+
+    local resizeButton = CreateFrame("Button", nil, spreadsheetFrame)
+    resizeButton:SetSize(16, 16)
+    resizeButton:SetPoint("BOTTOMRIGHT", -4, 4)
+    resizeButton:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+    resizeButton:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
+    resizeButton:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
+    resizeButton:SetScript("OnMouseDown", function(self)
+        local parent = self:GetParent()
+        if parent and parent.StartSizing then
+            parent:StartSizing("BOTTOMRIGHT")
+        end
+    end)
+    resizeButton:SetScript("OnMouseUp", function(self)
+        local parent = self:GetParent()
+        if parent and parent.StopMovingOrSizing then
+            parent:StopMovingOrSizing()
+        end
+    end)
+
+    local horizontalSlider = CreateFrame("Slider", "PotionTrackerSpreadsheetHorizontalSlider", spreadsheetFrame, "OptionsSliderTemplate")
+    horizontalSlider:SetOrientation("HORIZONTAL")
+    horizontalSlider:SetHeight(14)
+    horizontalSlider:SetPoint("TOPLEFT", scrollFrame, "BOTTOMLEFT", 0, -10)
+    horizontalSlider:SetPoint("TOPRIGHT", scrollFrame, "BOTTOMRIGHT", 0, -10)
+    horizontalSlider:SetMinMaxValues(0, 0)
+    horizontalSlider:SetValueStep(1)
+    horizontalSlider:Hide()
+    spreadsheetFrame.horizontalSlider = horizontalSlider
+
+    if horizontalSlider.GetName then
+        local name = horizontalSlider:GetName()
+        if name then
+            local low = _G[name .. "Low"]
+            local high = _G[name .. "High"]
+            local text = _G[name .. "Text"]
+            if low then low:Hide() end
+            if high then high:Hide() end
+            if text then text:Hide() end
+        end
+    end
+
+    horizontalSlider:SetScript("OnValueChanged", function(self, value)
+        if self.isUpdating then
+            return
+        end
+
+        local minValue, maxValue = self:GetMinMaxValues()
+        local clamped = math.max(minValue or 0, math.min(value or 0, maxValue or 0))
+
+        self.isUpdating = true
+        if scrollFrame.SetHorizontalScroll then
+            scrollFrame:SetHorizontalScroll(clamped)
+        end
+        self.isUpdating = false
+
+        spreadsheetFrame.horizontalOffset = clamped
+    end)
+
+    scrollFrame:SetScript("OnHorizontalScroll", function(_, offset)
+        spreadsheetFrame.horizontalOffset = offset or 0
+        if horizontalSlider and not horizontalSlider.isUpdating then
+            horizontalSlider.isUpdating = true
+            horizontalSlider:SetValue(offset or 0)
+            horizontalSlider.isUpdating = false
+        end
+    end)
+
+    scrollFrame:SetScript("OnScrollRangeChanged", function(self, xrange)
+        if not horizontalSlider then
+            return
+        end
+
+        local range = math.max(0, xrange or 0)
+        local current = math.min(self:GetHorizontalScroll() or 0, range)
+
+        horizontalSlider.isUpdating = true
+        horizontalSlider:SetMinMaxValues(0, range)
+        horizontalSlider:SetValue(current)
+        if range > 0 then
+            horizontalSlider:Show()
+        else
+            horizontalSlider:Hide()
+        end
+        horizontalSlider.isUpdating = false
+
+        spreadsheetFrame.horizontalOffset = current
+    end)
 
     -- Store references for updates
     spreadsheetFrame.scrollFrame = scrollFrame
@@ -1435,6 +1560,12 @@ function UI.Spreadsheet:Create()
     spreadsheetFrame:SetScript("OnKeyDown", function(self, key)
         if key == "ESCAPE" then
             self:Hide()
+        end
+    end)
+
+    spreadsheetFrame:SetScript("OnSizeChanged", function(self)
+        if self:IsShown() then
+            UI.Spreadsheet:UpdateData()
         end
     end)
 
@@ -1448,7 +1579,9 @@ function UI.Spreadsheet:UpdateData()
     end
 
     local content = spreadsheetFrame.content
-    
+    local scrollFrame = spreadsheetFrame.scrollFrame
+    local horizontalSlider = spreadsheetFrame.horizontalSlider
+
     -- Clear existing content
     for i = content:GetNumChildren(), 1, -1 do
         local child = select(i, content:GetChildren())
@@ -1456,11 +1589,25 @@ function UI.Spreadsheet:UpdateData()
         child:SetParent(nil)
     end
 
+    if spreadsheetFrame.isUpdatingData then
+        return
+    end
+
+    spreadsheetFrame.isUpdatingData = true
+    local previousOffset = spreadsheetFrame.horizontalOffset or 0
+
     if not PotionTrackerDB or not PotionTrackerDB.buffHistory or #PotionTrackerDB.buffHistory == 0 then
         local noDataText = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
         noDataText:SetPoint("CENTER", 0, 0)
         noDataText:SetText("No buff usage data available")
         noDataText:SetTextColor(0.7, 0.7, 0.7)
+        spreadsheetFrame.horizontalOffset = 0
+        if horizontalSlider then
+            horizontalSlider:Hide()
+            horizontalSlider:SetMinMaxValues(0, 0)
+            horizontalSlider:SetValue(0)
+        end
+        spreadsheetFrame.isUpdatingData = nil
         return
     end
 
@@ -1504,14 +1651,34 @@ function UI.Spreadsheet:UpdateData()
         noDataText:SetPoint("CENTER", 0, 0)
         noDataText:SetText("No buff usage data available")
         noDataText:SetTextColor(0.7, 0.7, 0.7)
+        spreadsheetFrame.horizontalOffset = 0
+        if horizontalSlider then
+            horizontalSlider:Hide()
+            horizontalSlider:SetMinMaxValues(0, 0)
+            horizontalSlider:SetValue(0)
+        end
+        spreadsheetFrame.isUpdatingData = nil
         return
     end
 
     -- Create table headers and data
-    local cellWidth = 120
-    local cellHeight = 20
     local startX = 10
     local startY = -10
+    local minCellWidth = 90
+    local totalColumns = #sortedBuffs + 1
+    local availableWidth = 0
+    if scrollFrame and scrollFrame.GetWidth then
+        availableWidth = math.max((scrollFrame:GetWidth() or 0) - startX - 20, 0)
+    end
+    local cellWidth = minCellWidth
+    if availableWidth > 0 then
+        local computed = math.floor(availableWidth / totalColumns)
+        if computed >= minCellWidth then
+            cellWidth = computed
+        end
+    end
+
+    local cellHeight = 20
 
     -- Header row
     local headerBg = content:CreateTexture(nil, "BACKGROUND")
@@ -1575,6 +1742,32 @@ function UI.Spreadsheet:UpdateData()
     local totalHeight = startY + ((#allPlayers + 1) * cellHeight) + 20
     content:SetWidth(totalWidth)
     content:SetHeight(totalHeight)
+
+    if scrollFrame and scrollFrame.UpdateScrollChildRect then
+        scrollFrame:UpdateScrollChildRect()
+    end
+
+    local overflow = 0
+    if scrollFrame and scrollFrame.GetHorizontalScrollRange then
+        overflow = math.max(0, scrollFrame:GetHorizontalScrollRange() or 0)
+    end
+
+    local currentOffset = math.min(previousOffset, overflow)
+
+    if horizontalSlider then
+        horizontalSlider.isUpdating = true
+        horizontalSlider:SetMinMaxValues(0, overflow)
+        horizontalSlider:SetValue(currentOffset)
+        horizontalSlider:SetShown(overflow > 0)
+        horizontalSlider.isUpdating = false
+    end
+
+    if scrollFrame and scrollFrame.SetHorizontalScroll then
+        scrollFrame:SetHorizontalScroll(currentOffset)
+    end
+
+    spreadsheetFrame.horizontalOffset = currentOffset
+    spreadsheetFrame.isUpdatingData = nil
 end
 
 function UI.Spreadsheet:Show()
