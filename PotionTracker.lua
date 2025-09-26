@@ -354,8 +354,23 @@ local function EnforceHistoryLimit()
     if not buffHistory then return end
 
     local limit = GetHistoryLimit()
-    while #buffHistory > limit do
-        table.remove(buffHistory, 1)
+    local count = #buffHistory
+    if count <= limit then
+        if PotionTrackerDB then
+            PotionTrackerDB.buffHistory = buffHistory
+        end
+        return
+    end
+
+    local overflow = count - limit
+    local writeIndex = 1
+    for readIndex = overflow + 1, count do
+        buffHistory[writeIndex] = buffHistory[readIndex]
+        writeIndex = writeIndex + 1
+    end
+
+    for i = writeIndex, count do
+        buffHistory[i] = nil
     end
 
     if PotionTrackerDB then
@@ -1523,11 +1538,11 @@ local function GetUnitBuffs(unit)
     local buffs = {}
     local i = 1
     local name, _, _, _, duration, expirationTime, _, _, _, spellId = UnitBuff(unit, i)
-    
+
     while name do
-        -- Check if this buff's spell ID matches any of our tracked buffs
         if trackedBuffs[spellId] then
-            buffs[trackedBuffs[spellId]] = {
+            buffs[spellId] = {
+                name = trackedBuffs[spellId] or name,
                 duration = duration,
                 expirationTime = expirationTime
             }
@@ -1535,7 +1550,7 @@ local function GetUnitBuffs(unit)
         i = i + 1
         name, _, _, _, duration, expirationTime, _, _, _, spellId = UnitBuff(unit, i)
     end
-    
+
     return buffs
 end
 
@@ -1556,46 +1571,13 @@ local function InitializeUnitBuffs(unit)
 
     lastUnitUpdate[unit] = 0
 
-    -- Check each tracked buff directly
-    for spellId, buffName in pairs(trackedBuffs) do
-        local auraName = GetSpellInfo(spellId) or buffName
-        Debug("Checking for buff: " .. tostring(auraName))
-        local name, _, _, _, duration = AuraUtil.FindAuraByName(auraName, unit, "HELPFUL")
-        if name then
-            Debug("Found tracked buff at load: " .. name)
+    local currentBuffs = GetUnitBuffs(unit)
 
-            -- Print to chat
-            local timeStr = ""
-            if duration and duration > 0 then
-                local minutes = math.floor(duration / 60)
-                local seconds = duration % 60
-                timeStr = string.format(" (%dm %ds)", minutes, seconds)
-            end
-            Print(unitName .. " has " .. name .. timeStr)
-
-            -- Record the event immediately
-            local timestamp = time()
-            local entry = {
-                timestamp = timestamp,
-                date = date("%Y-%m-%d %H:%M:%S", timestamp),
-                unit = unitName,
-                buff = name,
-                event = "BUFF_GAINED",
-                duration = duration or 0
-            }
-
-            -- Add directly to history
-            if not buffHistory then buffHistory = {} end
-            table.insert(buffHistory, entry)
-            if not PotionTrackerDB then PotionTrackerDB = {} end
-            PotionTrackerDB.buffHistory = buffHistory
-            EnforceHistoryLimit()
-            Debug("History size after initializing buff: " .. #buffHistory)
-        end
+    for _, buffInfo in pairs(currentBuffs) do
+        RecordBuffEvent(unitName, buffInfo.name, "BUFF_GAINED", buffInfo.duration)
     end
-    
-    -- Store current state for future comparisons
-    previousBuffs[unit] = GetUnitBuffs(unit)
+
+    previousBuffs[unit] = currentBuffs
 end
 
 -- Function to add event to history
@@ -1636,6 +1618,8 @@ local function RecordBuffEvent(unitName, buffName, eventType, duration)
         Print(unitName .. " gained " .. buffName .. timeLeft)
     elseif eventType == "BUFF_LOST" then
         Print(unitName .. " lost " .. buffName)
+    elseif eventType == "BUFF_REFRESHED" then
+        Print(unitName .. " refreshed " .. buffName)
     end
 end
 
@@ -1656,19 +1640,19 @@ local function CheckNewBuffs(unit)
     previousBuffs[unit] = previousBuffs[unit] or {}
     
     -- Check for new buffs (only tracked ones)
-    for buffName, buffInfo in pairs(currentBuffs) do
-        if not previousBuffs[unit][buffName] then
-            RecordBuffEvent(unitName, buffName, "BUFF_GAINED", buffInfo.duration)
+    for spellId, buffInfo in pairs(currentBuffs) do
+        if not previousBuffs[unit][spellId] then
+            RecordBuffEvent(unitName, buffInfo.name, "BUFF_GAINED", buffInfo.duration)
         end
     end
-    
+
     -- Check for removed buffs (only tracked ones)
-    for buffName in pairs(previousBuffs[unit]) do
-        if not currentBuffs[buffName] then
-            RecordBuffEvent(unitName, buffName, "BUFF_LOST", 0)
+    for spellId, previousInfo in pairs(previousBuffs[unit]) do
+        if not currentBuffs[spellId] then
+            RecordBuffEvent(unitName, previousInfo.name, "BUFF_LOST", 0)
         end
     end
-    
+
     -- Update previous buffs
     previousBuffs[unit] = currentBuffs
 end
@@ -2065,11 +2049,11 @@ f:SetScript("OnEvent", function(self, event, ...)
     elseif event == "COMBAT_LOG_EVENT_UNFILTERED" then
         local timestamp, combatEvent, _, sourceGUID, sourceName, _, _, destGUID, destName, _, _, spellId = CombatLogGetCurrentEventInfo()
 
-        -- Only process certain events
-        if combatEvent == "SPELL_AURA_APPLIED" then
-            -- Check if this is a tracked buff
-            if trackedBuffs[spellId] and destGUID and destGUID:find("^Player") then
+        if trackedBuffs[spellId] and destGUID and destGUID:find("^Player") then
+            if combatEvent == "SPELL_AURA_APPLIED" then
                 RecordBuffEvent(destName or "Unknown", trackedBuffs[spellId], "BUFF_GAINED", 0)
+            elseif combatEvent == "SPELL_AURA_REFRESH" then
+                RecordBuffEvent(destName or "Unknown", trackedBuffs[spellId], "BUFF_REFRESHED", 0)
             end
         end
 
