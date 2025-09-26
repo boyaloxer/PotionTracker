@@ -808,6 +808,22 @@ local function BuildSortedBuffList()
     return list
 end
 
+local function BuildCategoryList()
+    local categories = {}
+    local seen = {}
+
+    for _, buff in pairs(availableBuffs) do
+        local category = buff.category or "Other Buffs"
+        if not seen[category] then
+            seen[category] = true
+            table.insert(categories, category)
+        end
+    end
+
+    table.sort(categories)
+    return categories
+end
+
 local function GetDefaultBuffState(spellId)
     if defaultTrackedBuffs[spellId] ~= nil then
         return defaultTrackedBuffs[spellId]
@@ -896,7 +912,7 @@ function UI.BuffConfig:Create()
     buffConfigFrame = CreateFrame("Frame", "PotionTrackerBuffConfigFrame", UIParent, WithBackdrop("DialogBoxFrame"))
 
     -- Basic frame setup
-    buffConfigFrame:SetSize(400, 500)
+    buffConfigFrame:SetSize(440, 520)
     self:ApplySavedPosition()
     buffConfigFrame:SetFrameStrata("HIGH")
     buffConfigFrame:SetFrameLevel(1000)
@@ -904,6 +920,10 @@ function UI.BuffConfig:Create()
     buffConfigFrame:EnableMouse(true)
     buffConfigFrame:EnableKeyboard(true)
     buffConfigFrame:RegisterForDrag("LeftButton")
+    buffConfigFrame.filters = {
+        search = "",
+        category = "ALL",
+    }
 
     buffConfigFrame:SetScript("OnDragStart", function(self)
         if self.StartMoving then
@@ -930,33 +950,145 @@ function UI.BuffConfig:Create()
         buffConfigFrame:Hide()
     end)
 
+    -- Filter controls
+    local searchLabel = buffConfigFrame:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+    searchLabel:SetPoint("TOPLEFT", 20, -60)
+    searchLabel:SetText("Search buffs")
+
+    local searchBox = CreateFrame("EditBox", "PotionTrackerBuffSearchBox", buffConfigFrame, "InputBoxTemplate")
+    searchBox:SetSize(200, 24)
+    searchBox:SetPoint("TOPLEFT", searchLabel, "BOTTOMLEFT", 0, -4)
+    searchBox:SetAutoFocus(false)
+    searchBox:SetMaxLetters(60)
+    searchBox:SetTextInsets(6, 6, 2, 2)
+    searchBox:SetScript("OnEnterPressed", function(self)
+        self:ClearFocus()
+    end)
+    searchBox:SetScript("OnEscapePressed", function(self)
+        self:SetText("")
+        self:ClearFocus()
+    end)
+    searchBox:SetScript("OnEditFocusGained", function(self)
+        self:HighlightText()
+    end)
+    searchBox:SetScript("OnTextChanged", function(self)
+        buffConfigFrame.filters.search = self:GetText() or ""
+        buffConfigFrame:ApplyFilters()
+    end)
+    searchBox:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Filter the list by spell name or spell ID.", 1, 1, 1, true)
+        GameTooltip:AddLine("Leave empty to show every tracked potion.", 0.8, 0.8, 0.8, true)
+        GameTooltip:Show()
+    end)
+    searchBox:SetScript("OnLeave", GameTooltip_Hide)
+    buffConfigFrame.searchBox = searchBox
+
+    local categoryLabel = buffConfigFrame:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+    categoryLabel:SetPoint("TOPLEFT", searchLabel, "TOPRIGHT", 24, 0)
+    categoryLabel:SetText("Category")
+
+    local categoryDropdown = CreateFrame("Frame", "PotionTrackerBuffCategoryDropdown", buffConfigFrame, WithBackdrop("UIDropDownMenuTemplate"))
+    categoryDropdown:SetPoint("TOPLEFT", categoryLabel, "BOTTOMLEFT", -16, -6)
+    UIDropDownMenu_SetWidth(categoryDropdown, 160)
+    buffConfigFrame.categoryDropdown = categoryDropdown
+
+    local categoryOptions = BuildCategoryList()
+    table.insert(categoryOptions, 1, "All Categories")
+    buffConfigFrame.categoryOptions = categoryOptions
+
+    UIDropDownMenu_Initialize(categoryDropdown, function(_, level)
+        if not level then
+            return
+        end
+
+        for index, category in ipairs(categoryOptions) do
+            local value = (index == 1) and "ALL" or category
+            local info = UIDropDownMenu_CreateInfo()
+            info.text = category
+            info.value = value
+            info.func = function()
+                buffConfigFrame.filters.category = value
+                UIDropDownMenu_SetSelectedValue(categoryDropdown, value)
+                if UIDropDownMenu_SetText then
+                    UIDropDownMenu_SetText(categoryDropdown, category)
+                elseif categoryDropdown.Text then
+                    categoryDropdown.Text:SetText(category)
+                end
+                buffConfigFrame:ApplyFilters()
+            end
+            info.checked = (buffConfigFrame.filters.category == value)
+            UIDropDownMenu_AddButton(info, level)
+        end
+    end)
+
+    UIDropDownMenu_SetSelectedValue(categoryDropdown, buffConfigFrame.filters.category)
+    if UIDropDownMenu_SetText then
+        UIDropDownMenu_SetText(categoryDropdown, categoryOptions[1])
+    elseif categoryDropdown.Text then
+        categoryDropdown.Text:SetText(categoryOptions[1])
+    end
+
+    local dropdownButton = _G[categoryDropdown:GetName() .. "Button"]
+    if dropdownButton then
+        dropdownButton:HookScript("OnEnter", function(button)
+            GameTooltip:SetOwner(button, "ANCHOR_RIGHT")
+            GameTooltip:SetText("Limit the list to a specific potion category.", 1, 1, 1, true)
+            GameTooltip:AddLine("Select 'All Categories' to restore the full list.", 0.8, 0.8, 0.8, true)
+            GameTooltip:Show()
+        end)
+        dropdownButton:HookScript("OnLeave", GameTooltip_Hide)
+    end
+
+    local filterStatus = buffConfigFrame:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    filterStatus:SetPoint("TOPLEFT", searchBox, "BOTTOMLEFT", 0, -10)
+    filterStatus:SetWidth(360)
+    filterStatus:SetJustifyH("LEFT")
+    filterStatus:SetTextColor(0.8, 0.8, 0.8)
+    buffConfigFrame.filterStatus = filterStatus
+
     -- Scrollable buff list
     local scrollFrame = CreateFrame("ScrollFrame", "PotionTrackerBuffScrollFrame", buffConfigFrame, WithBackdrop("UIPanelScrollFrameTemplate"))
-    scrollFrame:SetPoint("TOPLEFT", 20, -60)
+    scrollFrame:SetPoint("TOPLEFT", 20, -170)
     scrollFrame:SetPoint("BOTTOMRIGHT", -45, 90)
 
     local content = CreateFrame("Frame", nil, scrollFrame)
     content:SetSize(1, 1)
     scrollFrame:SetScrollChild(content)
+    buffConfigFrame.content = content
 
     local sortedBuffs = BuildSortedBuffList()
-    local yOffset = 0
-    local currentCategory = nil
+    buffConfigFrame.sortedBuffs = sortedBuffs
+    buffConfigFrame.totalBuffs = #sortedBuffs
+    buffConfigFrame.categoryHeaders = {}
+
     local checkboxes = {}
+    local entries = {}
+
+    local noResultsText = content:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    noResultsText:SetTextColor(0.8, 0.8, 0.8)
+    noResultsText:SetJustifyH("LEFT")
+    noResultsText:SetText("No buffs match the current filters")
+    noResultsText:Hide()
+    buffConfigFrame.noResultsText = noResultsText
+
+    local function ShowBuffTooltip(frame, buff)
+        GameTooltip:SetOwner(frame, "ANCHOR_RIGHT")
+        GameTooltip:SetText(buff.name, 1, 1, 1, true)
+        GameTooltip:AddLine(string.format("Spell ID: %d", buff.spellId), 0.8, 0.8, 0.8)
+        local defaultState = GetDefaultBuffState(buff.spellId) and "Tracked" or "Not tracked"
+        GameTooltip:AddLine("Default: " .. defaultState, 0.6, 0.6, 0.6)
+        GameTooltip:Show()
+    end
 
     for _, buff in ipairs(sortedBuffs) do
-        if buff.category ~= currentCategory then
-            currentCategory = buff.category
-            local header = content:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-            header:SetPoint("TOPLEFT", 0, yOffset)
-            header:SetText(currentCategory)
-            header:SetTextColor(1, 0.82, 0)
-            header:SetJustifyH("LEFT")
-            yOffset = yOffset - 20
-        end
+        local row = CreateFrame("Frame", nil, content)
+        row:SetSize(320, 26)
+        row.buff = buff
+        row:EnableMouse(true)
 
-        local checkbox = CreateFrame("CheckButton", nil, content)
-        checkbox:SetPoint("TOPLEFT", 0, yOffset)
+        local checkbox = CreateFrame("CheckButton", nil, row)
+        checkbox:SetPoint("LEFT", 0, 0)
         checkbox:SetSize(24, 24)
 
         local normal = checkbox:CreateTexture(nil, "ARTWORK")
@@ -979,27 +1111,45 @@ function UI.BuffConfig:Create()
         checkbox:SetChecked(isChecked)
         checkbox.initialState = isChecked
 
-        local label = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+        local label = row:CreateFontString(nil, "ARTWORK", "GameFontNormal")
         label:SetPoint("LEFT", checkbox, "RIGHT", 10, 0)
         label:SetText(buff.name)
         label:SetJustifyH("LEFT")
-        label:SetTextColor(1, 1, 1, 1)
-        label:SetWidth(250)
+        label:SetWidth(260)
         label:SetWordWrap(false)
 
+        row.checkbox = checkbox
+        row.label = label
+
+        row:SetScript("OnEnter", function(frame)
+            ShowBuffTooltip(frame, buff)
+        end)
+        row:SetScript("OnLeave", GameTooltip_Hide)
+
+        checkbox:SetScript("OnEnter", function(frame)
+            ShowBuffTooltip(frame, buff)
+        end)
+        checkbox:SetScript("OnLeave", GameTooltip_Hide)
+
+        row:SetScript("OnMouseDown", function(_, button)
+            if button == "LeftButton" then
+                checkbox:Click()
+            end
+        end)
+
         checkboxes[buff.spellId] = checkbox
-        yOffset = yOffset - 28
+        table.insert(entries, row)
     end
 
-    content:SetWidth(280)
-    content:SetHeight(math.max(1, -yOffset))
+    content:SetWidth(320)
 
-    -- Store checkboxes for later use
+    -- Store checkboxes and rows for later use
     buffConfigFrame.checkboxes = checkboxes
+    buffConfigFrame.entries = entries
 
     local statusText = buffConfigFrame:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
     statusText:SetPoint("BOTTOM", 0, 60)
-    statusText:SetWidth(280)
+    statusText:SetWidth(320)
     statusText:SetJustifyH("CENTER")
 
     -- Save and reset buttons
@@ -1015,10 +1165,12 @@ function UI.BuffConfig:Create()
 
     local function UpdateChangeState(message, r, g, b)
         local hasChanges = false
-        for _, checkbox in pairs(checkboxes) do
-            if checkbox:GetChecked() ~= checkbox.initialState then
+        for _, row in ipairs(entries) do
+            if row.checkbox:GetChecked() ~= row.checkbox.initialState then
                 hasChanges = true
-                break
+                row.label:SetTextColor(1, 0.82, 0)
+            else
+                row.label:SetTextColor(1, 1, 1, 1)
             end
         end
 
@@ -1044,8 +1196,8 @@ function UI.BuffConfig:Create()
         UpdateChangeState(message, r, g, b)
     end
 
-    for _, checkbox in pairs(checkboxes) do
-        checkbox:SetScript("OnClick", function()
+    for _, row in ipairs(entries) do
+        row.checkbox:SetScript("OnClick", function()
             UpdateChangeState()
         end)
     end
@@ -1076,6 +1228,89 @@ function UI.BuffConfig:Create()
         UpdateChangeState("Defaults restored (save to apply)", 1, 0.82, 0)
     end)
 
+    function buffConfigFrame:ApplyFilters()
+        local filters = self.filters or {}
+        local categoryFilter = filters.category or "ALL"
+        local searchText = filters.search or ""
+        local normalizedSearch = searchText ~= "" and string.lower(searchText) or nil
+
+        local yOffset = 0
+        local visibleCount = 0
+        local currentCategory = nil
+
+        for _, header in pairs(self.categoryHeaders) do
+            header:Hide()
+        end
+
+        for _, row in ipairs(self.entries) do
+            row:Hide()
+        end
+
+        for _, row in ipairs(self.entries) do
+            local buff = row.buff
+            local matches = true
+
+            if categoryFilter ~= "ALL" and buff.category ~= categoryFilter then
+                matches = false
+            end
+
+            if matches and normalizedSearch then
+                local nameMatch = string.find(string.lower(buff.name), normalizedSearch, 1, true)
+                local idMatch = tostring(buff.spellId):find(normalizedSearch, 1, true)
+                matches = (nameMatch ~= nil) or (idMatch ~= nil)
+            end
+
+            if matches then
+                if buff.category ~= currentCategory then
+                    currentCategory = buff.category
+                    local header = self.categoryHeaders[currentCategory]
+                    if not header then
+                        header = self.content:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+                        header:SetTextColor(1, 0.82, 0)
+                        header:SetJustifyH("LEFT")
+                        self.categoryHeaders[currentCategory] = header
+                    end
+                    header:ClearAllPoints()
+                    header:SetPoint("TOPLEFT", 0, yOffset)
+                    header:SetText(currentCategory)
+                    header:Show()
+                    yOffset = yOffset - 20
+                end
+
+                row:ClearAllPoints()
+                row:SetPoint("TOPLEFT", 0, yOffset)
+                row:Show()
+                yOffset = yOffset - row:GetHeight() - 4
+                visibleCount = visibleCount + 1
+            end
+        end
+
+        if visibleCount == 0 then
+            self.noResultsText:Show()
+            self.noResultsText:ClearAllPoints()
+            self.noResultsText:SetPoint("TOPLEFT", 0, 0)
+            yOffset = -24
+        else
+            self.noResultsText:Hide()
+        end
+
+        self.content:SetHeight(math.max(1, -yOffset))
+
+        if self.filterStatus then
+            local message = string.format("Showing %d of %d buffs", visibleCount, self.totalBuffs)
+            if categoryFilter ~= "ALL" then
+                message = message .. string.format(" in %s", categoryFilter)
+            end
+            if normalizedSearch then
+                message = message .. string.format(" matching \"%s\"", searchText)
+            end
+            self.filterStatus:SetText(message)
+        end
+    end
+
+    buffConfigFrame:ApplyFilters()
+    UpdateChangeState("No pending changes", 0.7, 0.9, 0.7)
+
     buffConfigFrame:SetScript("OnKeyDown", function(self, key)
         if key == "ESCAPE" then
             self:Hide()
@@ -1090,8 +1325,6 @@ function UI.BuffConfig:Create()
     buffConfigFrame:SetScript("OnHide", function()
         PlayUISound("IG_MAINMENU_CLOSE", "igMainMenuClose")
     end)
-
-    UpdateChangeState("No pending changes", 0.7, 0.9, 0.7)
 
     Debug("Buff config frame creation completed")
     self.frame = buffConfigFrame
@@ -1131,9 +1364,13 @@ function UI.BuffConfig:Show()
         buffConfigFrame:ResetInitialStates("No pending changes", 0.7, 0.9, 0.7)
     end
 
+    if buffConfigFrame.ApplyFilters then
+        buffConfigFrame:ApplyFilters()
+    end
+
     -- Show the frame
     buffConfigFrame:Show()
-    
+
     Debug("Buff config frame should now be visible")
     Print("Buff configuration window opened")
 end
