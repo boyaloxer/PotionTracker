@@ -49,8 +49,7 @@ local function SetActiveLogLevel(level)
     return true
 end
 
--- Function to print messages with log levels
-Print = function(msg, level)
+local function Print(msg, level)
     local normalized = NormalizeLogLevel(level) or "INFO"
     if ShouldLog(normalized) then
         DEFAULT_CHAT_FRAME:AddMessage(string.format("|cFF00FF00PotionTracker|r [%s]: %s", normalized, msg))
@@ -100,10 +99,10 @@ local UI = {
     Options = {},
     BuffConfig = {},
     Spreadsheet = {},
+    Export = {},
 }
 
--- Helper function to get table size
-GetTableSize = function(t)
+local function GetTableSize(t)
     local count = 0
     for _ in pairs(t) do
         count = count + 1
@@ -144,7 +143,7 @@ local function FormatTargetDetails(targets)
     return table.concat(summaries, "; ")
 end
 
-ExportCSV = function()
+local function ExportCSV()
     if not PotionTrackerDB or not PotionTrackerDB.buffHistory or #PotionTrackerDB.buffHistory == 0 then
         Print("No events to export")
         return
@@ -289,6 +288,8 @@ local isTracking = false
 local minimapIcon = nil
 local buffHistory = {}
 local previousBuffs = {}
+local recentCombatAuraEvents = {}
+local nextAuraCleanup = 0
 local dropDown = nil  -- Move dropDown to global scope
 local optionsPanel = nil
 
@@ -314,6 +315,7 @@ end
 -- Forward declarations
 local InitializeAllUnits
 local UpdateOptionsPanel
+local combatTargets
 
 local DEFAULT_HISTORY_LIMIT = 1000
 local MIN_HISTORY_LIMIT = 100
@@ -403,10 +405,14 @@ local function ToggleTracking()
         -- Reset cached buff state and scan current units so we don't miss existing buffs
         previousBuffs = {}
         lastUnitUpdate = {}
+        recentCombatAuraEvents = {}
+        nextAuraCleanup = 0
         ResetCombatState()
         InitializeAllUnits()
     else
         Print("Tracking stopped")
+        recentCombatAuraEvents = {}
+        nextAuraCleanup = 0
         ResetCombatState()
     end
 
@@ -783,11 +789,15 @@ local availableBuffs = {
     [17548] = { name = "Greater Shadow Protection", category = "Protection Potions" },
     [17544] = { name = "Greater Nature Protection", category = "Protection Potions" },
     [17545] = { name = "Greater Frost Protection", category = "Protection Potions" },
-    [28511] = { name = "Elixir of Major Firepower", category = "Battle Elixirs" },
 
     -- Defensive Potions
     [17540] = { name = "Greater Stoneshield Potion", category = "Defensive Potions" },
     [17537] = { name = "Elixir of Brute Force", category = "Battle Elixirs" },
+
+    -- Mana and healing consumables
+    [17531] = { name = "Major Mana Potion", category = "Mana Consumables" },
+    [17534] = { name = "Major Healing Potion", category = "Healing Consumables" },
+    [12662] = { name = "Demonic Rune", category = "Mana Consumables" },
 
     -- Utility Potions
     [11359] = { name = "Restoration Potion", category = "Utility Potions" },
@@ -810,6 +820,9 @@ local defaultTrackedBuffs = {
     [17540] = true,
     [11359] = true,
     [6615] = true,
+    [17531] = true,
+    [17534] = false,
+    [12662] = true,
 }
 
 -- Currently tracked buffs (populated from saved variables)
@@ -1284,6 +1297,12 @@ function UI.Spreadsheet:Create()
     -- Store references for updates
     spreadsheetFrame.scrollFrame = scrollFrame
     spreadsheetFrame.content = content
+    content.headerTextures = {}
+    content.headerTexts = {}
+    content.rowBackgrounds = {}
+    content.rowTexts = {}
+    content.cellBackgrounds = {}
+    content.cellTexts = {}
 
     spreadsheetFrame:SetScript("OnKeyDown", function(self, key)
         if key == "ESCAPE" then
@@ -1301,50 +1320,98 @@ function UI.Spreadsheet:UpdateData()
     end
 
     local content = spreadsheetFrame.content
-    
-    -- Clear existing content
-    for i = content:GetNumChildren(), 1, -1 do
-        local child = select(i, content:GetChildren())
-        child:Hide()
-        child:SetParent(nil)
+    local headerTextures = content.headerTextures
+    local headerTexts = content.headerTexts
+    local rowBackgrounds = content.rowBackgrounds
+    local rowTexts = content.rowTexts
+    local cellBackgrounds = content.cellBackgrounds
+    local cellTexts = content.cellTexts
+
+    local function HideHeaders()
+        if content.playerHeaderBg then
+            content.playerHeaderBg:Hide()
+        end
+        if content.playerHeaderText then
+            content.playerHeaderText:Hide()
+        end
+        for _, texture in ipairs(headerTextures) do
+            texture:Hide()
+        end
+        for _, text in ipairs(headerTexts) do
+            text:Hide()
+        end
+    end
+
+    local function HideRows(startRow)
+        for row = startRow, #rowBackgrounds do
+            if rowBackgrounds[row] then
+                rowBackgrounds[row]:Hide()
+            end
+            if rowTexts[row] then
+                rowTexts[row]:Hide()
+            end
+            if cellBackgrounds[row] then
+                for _, bg in ipairs(cellBackgrounds[row]) do
+                    bg:Hide()
+                end
+            end
+            if cellTexts[row] then
+                for _, text in ipairs(cellTexts[row]) do
+                    text:Hide()
+                end
+            end
+        end
+    end
+
+    local function ShowNoData(message)
+        HideHeaders()
+        HideRows(1)
+        if not content.noDataText then
+            content.noDataText = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+            content.noDataText:SetTextColor(0.7, 0.7, 0.7)
+        end
+        content.noDataText:ClearAllPoints()
+        content.noDataText:SetPoint("CENTER", 0, 0)
+        content.noDataText:SetText(message)
+        content.noDataText:Show()
+        content:SetSize(1, 1)
+    end
+
+    local function HideNoData()
+        if content.noDataText then
+            content.noDataText:Hide()
+        end
     end
 
     if not PotionTrackerDB or not PotionTrackerDB.buffHistory or #PotionTrackerDB.buffHistory == 0 then
-        local noDataText = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-        noDataText:SetPoint("CENTER", 0, 0)
-        noDataText:SetText("No buff usage data available")
-        noDataText:SetTextColor(0.7, 0.7, 0.7)
+        ShowNoData("No buff usage data available")
         return
     end
 
-    -- Create summary data structure
+    HideNoData()
+
     local playerBuffCounts = {}
     local allPlayers = {}
     local allBuffs = {}
 
-    -- Process all events
     for _, event in ipairs(PotionTrackerDB.buffHistory) do
         local playerName = event.unit or "Unknown"
         local buffName = event.buff or "Unknown"
-        
-        -- Initialize player data if needed
+
         if not playerBuffCounts[playerName] then
             playerBuffCounts[playerName] = {}
             table.insert(allPlayers, playerName)
         end
-        
-        -- Count buff usage (only count BUFF_GAINED events)
+
         if event.event == "BUFF_GAINED" then
             playerBuffCounts[playerName][buffName] = (playerBuffCounts[playerName][buffName] or 0) + 1
-            
-            -- Track unique buffs
+
             if not allBuffs[buffName] then
                 allBuffs[buffName] = true
             end
         end
     end
 
-    -- Sort players and buffs alphabetically
     table.sort(allPlayers)
     local sortedBuffs = {}
     for buffName in pairs(allBuffs) do
@@ -1353,77 +1420,140 @@ function UI.Spreadsheet:UpdateData()
     table.sort(sortedBuffs)
 
     if #allPlayers == 0 or #sortedBuffs == 0 then
-        local noDataText = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-        noDataText:SetPoint("CENTER", 0, 0)
-        noDataText:SetText("No buff usage data available")
-        noDataText:SetTextColor(0.7, 0.7, 0.7)
+        ShowNoData("No buff usage data available")
         return
     end
 
-    -- Create table headers and data
     local cellWidth = 120
     local cellHeight = 20
     local startX = 10
     local startY = -10
 
-    -- Header row
-    local headerBg = content:CreateTexture(nil, "BACKGROUND")
-    headerBg:SetColorTexture(0.3, 0.3, 0.3, 0.8)
-    headerBg:SetPoint("TOPLEFT", startX, startY)
-    headerBg:SetSize(cellWidth, cellHeight)
-
-    local playerHeader = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-    playerHeader:SetPoint("TOPLEFT", startX + 5, startY - 2)
-    playerHeader:SetText("Player")
-    playerHeader:SetTextColor(1, 1, 1)
-
-    -- Buff headers
-    for i, buffName in ipairs(sortedBuffs) do
-        local headerBg = content:CreateTexture(nil, "BACKGROUND")
-        headerBg:SetColorTexture(0.3, 0.3, 0.3, 0.8)
-        headerBg:SetPoint("TOPLEFT", startX + (i * cellWidth), startY)
-        headerBg:SetSize(cellWidth, cellHeight)
-
-        local buffHeader = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-        buffHeader:SetPoint("TOPLEFT", startX + (i * cellWidth) + 5, startY - 2)
-        buffHeader:SetText(buffName)
-        buffHeader:SetTextColor(1, 1, 1)
-        buffHeader:SetWidth(cellWidth - 10)
-        buffHeader:SetJustifyH("LEFT")
+    if not content.playerHeaderBg then
+        content.playerHeaderBg = content:CreateTexture(nil, "BACKGROUND")
+        content.playerHeaderBg:SetColorTexture(0.3, 0.3, 0.3, 0.8)
+    end
+    if not content.playerHeaderText then
+        content.playerHeaderText = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+        content.playerHeaderText:SetTextColor(1, 1, 1)
     end
 
-    -- Data rows
+    content.playerHeaderBg:Show()
+    content.playerHeaderBg:ClearAllPoints()
+    content.playerHeaderBg:SetPoint("TOPLEFT", startX, startY)
+    content.playerHeaderBg:SetSize(cellWidth, cellHeight)
+
+    content.playerHeaderText:Show()
+    content.playerHeaderText:ClearAllPoints()
+    content.playerHeaderText:SetPoint("TOPLEFT", startX + 5, startY - 2)
+    content.playerHeaderText:SetText("Player")
+
+    for index, buffName in ipairs(sortedBuffs) do
+        if not headerTextures[index] then
+            local texture = content:CreateTexture(nil, "BACKGROUND")
+            texture:SetColorTexture(0.3, 0.3, 0.3, 0.8)
+            headerTextures[index] = texture
+        end
+        if not headerTexts[index] then
+            local text = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+            text:SetTextColor(1, 1, 1)
+            text:SetJustifyH("LEFT")
+            headerTexts[index] = text
+        end
+
+        local texture = headerTextures[index]
+        local text = headerTexts[index]
+
+        texture:Show()
+        texture:ClearAllPoints()
+        texture:SetPoint("TOPLEFT", startX + (index * cellWidth), startY)
+        texture:SetSize(cellWidth, cellHeight)
+
+        text:Show()
+        text:ClearAllPoints()
+        text:SetPoint("TOPLEFT", startX + (index * cellWidth) + 5, startY - 2)
+        text:SetWidth(cellWidth - 10)
+        text:SetText(buffName)
+    end
+
+    for index = #sortedBuffs + 1, #headerTextures do
+        if headerTextures[index] then headerTextures[index]:Hide() end
+        if headerTexts[index] then headerTexts[index]:Hide() end
+    end
+
     for row, playerName in ipairs(allPlayers) do
         local yPos = startY - (row * cellHeight) - cellHeight
 
-        -- Player name cell
-        local playerBg = content:CreateTexture(nil, "BACKGROUND")
-        playerBg:SetColorTexture(0.2, 0.2, 0.2, 0.6)
+        if not rowBackgrounds[row] then
+            local texture = content:CreateTexture(nil, "BACKGROUND")
+            texture:SetColorTexture(0.2, 0.2, 0.2, 0.6)
+            rowBackgrounds[row] = texture
+        end
+        if not rowTexts[row] then
+            local text = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+            text:SetTextColor(1, 1, 1)
+            rowTexts[row] = text
+        end
+
+        local playerBg = rowBackgrounds[row]
+        local playerText = rowTexts[row]
+
+        playerBg:Show()
+        playerBg:ClearAllPoints()
         playerBg:SetPoint("TOPLEFT", startX, yPos)
         playerBg:SetSize(cellWidth, cellHeight)
 
-        local playerText = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+        playerText:Show()
+        playerText:ClearAllPoints()
         playerText:SetPoint("TOPLEFT", startX + 5, yPos - 2)
         playerText:SetText(playerName)
-        playerText:SetTextColor(1, 1, 1)
 
-        -- Buff count cells
+        cellBackgrounds[row] = cellBackgrounds[row] or {}
+        cellTexts[row] = cellTexts[row] or {}
+
         for col, buffName in ipairs(sortedBuffs) do
             local count = playerBuffCounts[playerName][buffName] or 0
-            
-            local cellBg = content:CreateTexture(nil, "BACKGROUND")
-            cellBg:SetColorTexture(0.2, 0.2, 0.2, 0.6)
+
+            if not cellBackgrounds[row][col] then
+                local texture = content:CreateTexture(nil, "BACKGROUND")
+                texture:SetColorTexture(0.2, 0.2, 0.2, 0.6)
+                cellBackgrounds[row][col] = texture
+            end
+
+            if not cellTexts[row][col] then
+                local text = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+                text:SetTextColor(0.8, 0.8, 1)
+                cellTexts[row][col] = text
+            end
+
+            local cellBg = cellBackgrounds[row][col]
+            local countText = cellTexts[row][col]
+
+            cellBg:Show()
+            cellBg:ClearAllPoints()
             cellBg:SetPoint("TOPLEFT", startX + (col * cellWidth), yPos)
             cellBg:SetSize(cellWidth, cellHeight)
 
-            local countText = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+            countText:Show()
+            countText:ClearAllPoints()
             countText:SetPoint("TOPLEFT", startX + (col * cellWidth) + 5, yPos - 2)
             countText:SetText(tostring(count))
-            countText:SetTextColor(0.8, 0.8, 1)
+        end
+
+        if cellBackgrounds[row] then
+            for col = #sortedBuffs + 1, #cellBackgrounds[row] do
+                if cellBackgrounds[row][col] then
+                    cellBackgrounds[row][col]:Hide()
+                end
+                if cellTexts[row][col] then
+                    cellTexts[row][col]:Hide()
+                end
+            end
         end
     end
 
-    -- Set content size
+    HideRows(#allPlayers + 1)
+
     local totalWidth = startX + ((#sortedBuffs + 1) * cellWidth) + 10
     local totalHeight = startY + ((#allPlayers + 1) * cellHeight) + 20
     content:SetWidth(totalWidth)
@@ -1434,10 +1564,90 @@ function UI.Spreadsheet:Show()
     if not spreadsheetFrame then
         self:Create()
     end
-    
+
     self:UpdateData()
     spreadsheetFrame:Show()
     Print("Buff usage spreadsheet opened")
+end
+
+local function EnsureExportFrame()
+    if UI.Export.frame then
+        return UI.Export.frame
+    end
+
+    local frame = CreateFrame("Frame", "PotionTrackerExportFrame", InterfaceOptionsFrame or UIParent, WithBackdrop("DialogBoxFrame"))
+    frame:SetSize(520, 420)
+    frame:SetPoint("CENTER")
+    frame:SetFrameStrata("DIALOG")
+    frame:SetMovable(true)
+    frame:EnableMouse(true)
+    frame:RegisterForDrag("LeftButton")
+    frame:SetScript("OnDragStart", function(self)
+        if self.StartMoving then
+            self:StartMoving()
+        end
+    end)
+    frame:SetScript("OnDragStop", function(self)
+        if self.StopMovingOrSizing then
+            self:StopMovingOrSizing()
+        end
+    end)
+
+    local title = frame:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
+    title:SetPoint("TOP", 0, -18)
+    title:SetTextColor(1, 1, 1)
+    frame.title = title
+
+    local scrollFrame = CreateFrame("ScrollFrame", "PotionTrackerExportScrollFrame", frame, "UIPanelScrollFrameTemplate")
+    scrollFrame:SetPoint("TOPLEFT", 20, -50)
+    scrollFrame:SetPoint("BOTTOMRIGHT", -35, 50)
+
+    local editBox = CreateFrame("EditBox", nil, scrollFrame)
+    editBox:SetMultiLine(true)
+    editBox:SetFontObject(ChatFontNormal or GameFontHighlight)
+    editBox:SetWidth(440)
+    editBox:SetAutoFocus(false)
+    editBox:SetScript("OnEscapePressed", function()
+        frame:Hide()
+    end)
+    editBox:SetScript("OnEditFocusGained", function(self)
+        self:HighlightText()
+    end)
+    scrollFrame:SetScrollChild(editBox)
+    frame.editBox = editBox
+    frame:SetScript("OnHide", function()
+        editBox:ClearFocus()
+    end)
+
+    local selectButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    selectButton:SetPoint("BOTTOMLEFT", 20, 16)
+    selectButton:SetSize(140, 24)
+    selectButton:SetText("Select All")
+    selectButton:SetScript("OnClick", function()
+        editBox:SetFocus()
+        editBox:HighlightText()
+    end)
+
+    local closeButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    closeButton:SetPoint("BOTTOMRIGHT", -20, 16)
+    closeButton:SetSize(120, 24)
+    closeButton:SetText("Close")
+    closeButton:SetScript("OnClick", function()
+        frame:Hide()
+    end)
+
+    UI.Export.frame = frame
+    return frame
+end
+
+function UI.Export:Show(title, data)
+    local frame = EnsureExportFrame()
+    frame.title:SetText(title or "PotionTracker Export")
+    frame.editBox:SetText(data or "")
+    frame:Show()
+    frame.editBox:SetFocus()
+    frame.editBox:SetCursorPosition(0)
+    frame.editBox:HighlightText()
 end
 
 -- Table of tracked mobs/bosses
@@ -1529,6 +1739,42 @@ local trackedMobs = {
     ["Ysondre"] = true,
 }
 
+local function IsTrackableTarget(target)
+    if not target or not target.name then
+        return false
+    end
+
+    if trackedMobs[target.name] then
+        return true
+    end
+
+    if target.classification == "worldboss" then
+        return true
+    end
+
+    if target.level and target.level < 0 then
+        return true
+    end
+
+    if target.flags and bit then
+        local flags = target.flags
+        local isHostileNPC = bit.band(flags, COMBATLOG_OBJECT_TYPE_NPC or 0) > 0
+            and bit.band(flags, COMBATLOG_OBJECT_REACTION_HOSTILE or 0) > 0
+        if isHostileNPC then
+            local isBossFlagged = bit.band(flags, COMBATLOG_OBJECT_SPECIAL_BOSS or 0) > 0
+            if isBossFlagged then
+                return true
+            end
+        end
+    end
+
+    if target.guid and combatTargets and combatTargets[target.guid] then
+        return true
+    end
+
+    return false
+end
+
 -- Throttle for buff updates (prevent spam)
 local lastUnitUpdate = {}
 local UPDATE_THROTTLE = 0.05 -- seconds
@@ -1573,10 +1819,7 @@ local function InitializeUnitBuffs(unit)
 
     local currentBuffs = GetUnitBuffs(unit)
 
-    for _, buffInfo in pairs(currentBuffs) do
-        RecordBuffEvent(unitName, buffInfo.name, "BUFF_GAINED", buffInfo.duration)
-    end
-
+    -- Store baseline state without recording synthetic gain events
     previousBuffs[unit] = currentBuffs
 end
 
@@ -1811,7 +2054,7 @@ end
 local inCombat = false
 local currentTarget = nil
 local combatStartTime = nil
-local combatTargets = {}
+combatTargets = {}
 local combatTarget = nil  -- Primary target when combat started
 local encounterCounter = 0
 local activeEncounterId = nil
@@ -1821,21 +2064,26 @@ local function GetTargetInfo()
     if not UnitExists("target") then return nil end
     
     local name = UnitName("target")
-    -- Only return info if it's a tracked mob
-    if not trackedMobs[name] then return nil end
-    
+    if not name then return nil end
+
     local level = UnitLevel("target")
     local classification = UnitClassification("target")
     local isElite = classification == "elite" or classification == "rareelite"
     local guid = UnitGUID("target")
 
-    return {
+    local info = {
         name = name,
         level = level,
         classification = classification,
         isElite = isElite,
         guid = guid
     }
+
+    if not IsTrackableTarget(info) then
+        return nil
+    end
+
+    return info
 end
 
 local function GetCombatTargetsSnapshot()
@@ -1860,7 +2108,7 @@ end
 -- Function to record combat event
 local function RecordCombatEvent(eventType, target)
     local targetName = target and target.name or nil
-    if targetName and not trackedMobs[targetName] then
+    if targetName and not IsTrackableTarget(target) then
         Debug("Ignoring combat event for untracked target: " .. targetName)
         return
     end
@@ -1909,7 +2157,21 @@ end
 
 local function AddCombatTarget(target)
     if not inCombat then return end
-    if not target or not target.name or not trackedMobs[target.name] then return end
+    if not target or not target.name then return end
+
+    if not target.classification then
+        if currentTarget and currentTarget.name == target.name then
+            target.classification = currentTarget.classification
+            target.level = currentTarget.level
+            target.isElite = currentTarget.isElite
+        elseif combatTarget and combatTarget.name == target.name then
+            target.classification = combatTarget.classification
+            target.level = combatTarget.level
+            target.isElite = combatTarget.isElite
+        end
+    end
+
+    if not IsTrackableTarget(target) then return end
 
     local key = target.guid or target.name
     if not combatTargets[key] then
@@ -2001,9 +2263,21 @@ f:SetScript("OnEvent", function(self, event, ...)
                 InitializeUnitBuffs(unit)
             end
         end
-        
+
         -- Update current group state
         currentGroupMembers = newGroupMembers
+
+        local activeUnitTokens = {}
+        for _, unitToken in pairs(newGroupMembers) do
+            activeUnitTokens[unitToken] = true
+        end
+
+        for unitToken in pairs(previousBuffs) do
+            if not activeUnitTokens[unitToken] then
+                previousBuffs[unitToken] = nil
+                lastUnitUpdate[unitToken] = nil
+            end
+        end
     elseif event == "PLAYER_REGEN_DISABLED" then
         -- Entering combat
         if not isTracking then return end
@@ -2047,18 +2321,45 @@ f:SetScript("OnEvent", function(self, event, ...)
             end
         end
     elseif event == "COMBAT_LOG_EVENT_UNFILTERED" then
-        local timestamp, combatEvent, _, sourceGUID, sourceName, _, _, destGUID, destName, _, _, spellId = CombatLogGetCurrentEventInfo()
+        local _, combatEvent, _, _, _, _, _, destGUID, destName, destFlags, _, spellId = CombatLogGetCurrentEventInfo()
+        local trackedBuffName = trackedBuffs[spellId]
 
-        if trackedBuffs[spellId] and destGUID and destGUID:find("^Player") then
-            if combatEvent == "SPELL_AURA_APPLIED" then
-                RecordBuffEvent(destName or "Unknown", trackedBuffs[spellId], "BUFF_GAINED", 0)
-            elseif combatEvent == "SPELL_AURA_REFRESH" then
-                RecordBuffEvent(destName or "Unknown", trackedBuffs[spellId], "BUFF_REFRESHED", 0)
+        local function ShouldRecordCombatAura(combatEventType)
+            if not trackedBuffName then
+                return false
             end
+
+            if not destGUID then
+                return true
+            end
+
+            local key = string.format("%s:%s:%s", destGUID, spellId or "?", combatEventType)
+            local now = GetTime()
+            if recentCombatAuraEvents[key] and now - recentCombatAuraEvents[key] < 0.2 then
+                return false
+            end
+            recentCombatAuraEvents[key] = now
+            if now >= nextAuraCleanup then
+                for storedKey, recordedAt in pairs(recentCombatAuraEvents) do
+                    if now - recordedAt > 5 then
+                        recentCombatAuraEvents[storedKey] = nil
+                    end
+                end
+                nextAuraCleanup = now + 5
+            end
+            return true
+        end
+
+        if combatEvent == "SPELL_AURA_APPLIED" and ShouldRecordCombatAura("GAIN") then
+            RecordBuffEvent(destName or "Unknown", trackedBuffName, "BUFF_GAINED", 0)
+        elseif combatEvent == "SPELL_AURA_REFRESH" and ShouldRecordCombatAura("REFRESH") then
+            RecordBuffEvent(destName or "Unknown", trackedBuffName, "BUFF_REFRESHED", 0)
+        elseif combatEvent == "SPELL_AURA_REMOVED" and ShouldRecordCombatAura("REMOVE") then
+            RecordBuffEvent(destName or "Unknown", trackedBuffName, "BUFF_LOST", 0)
         end
 
         if inCombat and destName and trackedMobs[destName] then
-            AddCombatTarget({ name = destName, guid = destGUID })
+            AddCombatTarget({ name = destName, guid = destGUID, flags = destFlags })
         end
     end
 end)
@@ -2082,7 +2383,6 @@ SlashCmdList["POTIONTRACKER"] = function(msg)
         Print("/pt clear - Clear buff history without reloading")
         Print("/pt stats - Show tracking statistics")
         Print("/pt reload - Reload tracked buffs")
-        Print("/pt hidetest - Hide test frame")
         Print("/pt log [level] - View or set log level")
         Print("/pt showcsv - Display summary table (players vs buffs)")
         Print("/pt showdetailed - Display detailed timestamp data")
@@ -2121,11 +2421,6 @@ SlashCmdList["POTIONTRACKER"] = function(msg)
                     buffInfo.name, spellId, tostring(isTracked), tostring(isEnabled)), "DEBUG")
             end
         end
-    elseif command == "hidetest" then
-        if _G.PotionTrackerTestFrame then
-            _G.PotionTrackerTestFrame:Hide()
-            Print("Test frame hidden")
-        end
     elseif command == "reload" then
         LoadTrackedBuffs()
         Print("Reloaded tracked buffs")
@@ -2142,48 +2437,14 @@ SlashCmdList["POTIONTRACKER"] = function(msg)
         end
     elseif command == "showcsv" then
         if PotionTrackerDB and PotionTrackerDB.exportedCSV then
-            Print("=== POTIONTRACKER SUMMARY TABLE ===")
-            Print("Copy the data below and save it as PotionTracker_Summary.csv:")
-            Print("")
-            
-            -- Split CSV into lines and print each one
-            local lines = {}
-            for line in PotionTrackerDB.exportedCSV:gmatch("[^\r\n]+") do
-                table.insert(lines, line)
-            end
-            
-            for i, line in ipairs(lines) do
-                Print(line)
-            end
-            
-            Print("")
-            Print("=== END SUMMARY TABLE ===")
-            Print("Total lines: " .. #lines)
-            Print("This shows player usage counts for each buff")
+            UI.Export:Show("PotionTracker Summary CSV", PotionTrackerDB.exportedCSV)
         else
             Print("No summary data found in SavedVariables.")
             Print("Run /pt export first to generate CSV data.")
         end
     elseif command == "showdetailed" then
         if PotionTrackerDB and PotionTrackerDB.exportedDetailedCSV then
-            Print("=== POTIONTRACKER DETAILED DATA ===")
-            Print("Copy the data below and save it as PotionTracker_Detailed.csv:")
-            Print("")
-            
-            -- Split CSV into lines and print each one
-            local lines = {}
-            for line in PotionTrackerDB.exportedDetailedCSV:gmatch("[^\r\n]+") do
-                table.insert(lines, line)
-            end
-            
-            for i, line in ipairs(lines) do
-                Print(line)
-            end
-            
-            Print("")
-            Print("=== END DETAILED DATA ===")
-            Print("Total lines: " .. #lines)
-            Print("This shows all events with timestamps")
+            UI.Export:Show("PotionTracker Detailed CSV", PotionTrackerDB.exportedDetailedCSV)
         else
             Print("No detailed data found in SavedVariables.")
             Print("Run /pt export first to generate CSV data.")
