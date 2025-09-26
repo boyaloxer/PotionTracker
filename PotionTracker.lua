@@ -272,9 +272,6 @@ local previousBuffs = {}
 local dropDown = nil  -- Move dropDown to global scope
 local optionsPanel = nil
 
--- Buff state tracking to prevent duplicate counting on reload
-local buffStates = {} -- [unit][buffName] = {isActive, lastSeen, hasBeenCounted}
-
 UI.Minimap.shapeFallbacks = {
     ROUND = { true, true, true, true },
     SQUARE = { false, false, false, false },
@@ -424,7 +421,6 @@ function UI.Minimap:InitializeMenu(frame, level, menuList)
     info.func = function()
         -- Clear both in-memory and saved data
         buffHistory = {}
-        buffStates = {}  -- Clear buff state tracking
         PotionTrackerDB.buffHistory = {}
         PotionTrackerDB.exportedCSV = nil
         PotionTrackerDB.exportedDetailedCSV = nil
@@ -1466,7 +1462,7 @@ local function GetUnitBuffs(unit)
     return buffs
 end
 
--- Function to initialize buff tracking for a unit (establishes baseline without counting)
+-- Function to initialize buff tracking for a unit
 local function InitializeUnitBuffs(unit)
     if not UnitExists(unit) then
         Debug("Unit does not exist: " .. tostring(unit))
@@ -1479,46 +1475,45 @@ local function InitializeUnitBuffs(unit)
         return
     end
 
-    Debug("Establishing buff baseline for " .. unitName)
+    Debug("Checking buffs for " .. unitName)
 
     lastUnitUpdate[unit] = 0
 
-    -- Initialize buff state tracking for this unit
-    if not buffStates[unit] then
-        buffStates[unit] = {}
-    end
-
-    -- Check each tracked buff and establish baseline state
+    -- Check each tracked buff directly
     for spellId, buffName in pairs(trackedBuffs) do
         local auraName = GetSpellInfo(spellId) or buffName
         Debug("Checking for buff: " .. tostring(auraName))
         local name, _, _, _, duration = AuraUtil.FindAuraByName(auraName, unit, "HELPFUL")
-        
         if name then
-            Debug("Found existing buff: " .. name .. " - establishing baseline")
-            
-            -- Print to chat (informational only)
+            Debug("Found tracked buff at load: " .. name)
+
+            -- Print to chat
             local timeStr = ""
             if duration and duration > 0 then
                 local minutes = math.floor(duration / 60)
                 local seconds = duration % 60
                 timeStr = string.format(" (%dm %ds)", minutes, seconds)
             end
-            Print(unitName .. " has " .. name .. timeStr .. " (baseline)")
+            Print(unitName .. " has " .. name .. timeStr)
 
-            -- Establish baseline state - mark as active but NOT counted
-            buffStates[unit][name] = {
-                isActive = true,
-                lastSeen = time(),
-                hasBeenCounted = false  -- Don't count existing buffs on reload
+            -- Record the event immediately
+            local timestamp = time()
+            local entry = {
+                timestamp = timestamp,
+                date = date("%Y-%m-%d %H:%M:%S", timestamp),
+                unit = unitName,
+                buff = name,
+                event = "BUFF_GAINED",
+                duration = duration or 0
             }
-        else
-            -- Mark as inactive
-            buffStates[unit][buffName] = {
-                isActive = false,
-                lastSeen = time(),
-                hasBeenCounted = false
-            }
+
+            -- Add directly to history
+            if not buffHistory then buffHistory = {} end
+            table.insert(buffHistory, entry)
+            if not PotionTrackerDB then PotionTrackerDB = {} end
+            PotionTrackerDB.buffHistory = buffHistory
+            EnforceHistoryLimit()
+            Debug("History size after initializing buff: " .. #buffHistory)
         end
     end
     
@@ -1567,7 +1562,7 @@ local function RecordBuffEvent(unitName, buffName, eventType, duration)
     end
 end
 
--- Function to check for buff state changes (only counts actual changes)
+-- Function to check for new buffs (optimized)
 local function CheckNewBuffs(unit)
     if not UnitExists(unit) then return end
     
@@ -1580,55 +1575,24 @@ local function CheckNewBuffs(unit)
     local unitName = UnitName(unit)
     local currentBuffs = GetUnitBuffs(unit)
     
-    -- Initialize buff state tracking for this unit if needed
-    if not buffStates[unit] then
-        buffStates[unit] = {}
-    end
+    -- Initialize previous buffs for this unit if needed
+    previousBuffs[unit] = previousBuffs[unit] or {}
     
-    -- Check for buff state changes
+    -- Check for new buffs (only tracked ones)
     for buffName, buffInfo in pairs(currentBuffs) do
-        local currentState = buffStates[unit][buffName]
-        
-        if not currentState then
-            -- New buff we haven't seen before
-            buffStates[unit][buffName] = {
-                isActive = true,
-                lastSeen = currentTime,
-                hasBeenCounted = true
-            }
+        if not previousBuffs[unit][buffName] then
             RecordBuffEvent(unitName, buffName, "BUFF_GAINED", buffInfo.duration)
-            Debug("New buff detected: " .. buffName .. " on " .. unitName)
-            
-        elseif not currentState.isActive then
-            -- Buff was inactive, now active - this is a real gain
-            buffStates[unit][buffName] = {
-                isActive = true,
-                lastSeen = currentTime,
-                hasBeenCounted = true
-            }
-            RecordBuffEvent(unitName, buffName, "BUFF_GAINED", buffInfo.duration)
-            Debug("Buff gained: " .. buffName .. " on " .. unitName)
-        else
-            -- Buff is still active, just update timestamp
-            buffStates[unit][buffName].lastSeen = currentTime
         end
     end
     
-    -- Check for removed buffs
-    for buffName, state in pairs(buffStates[unit]) do
-        if state.isActive and not currentBuffs[buffName] then
-            -- Buff was active, now inactive - this is a real loss
-            buffStates[unit][buffName] = {
-                isActive = false,
-                lastSeen = currentTime,
-                hasBeenCounted = state.hasBeenCounted
-            }
+    -- Check for removed buffs (only tracked ones)
+    for buffName in pairs(previousBuffs[unit]) do
+        if not currentBuffs[buffName] then
             RecordBuffEvent(unitName, buffName, "BUFF_LOST", 0)
-            Debug("Buff lost: " .. buffName .. " on " .. unitName)
         end
     end
     
-    -- Update previous buffs for compatibility
+    -- Update previous buffs
     previousBuffs[unit] = currentBuffs
 end
 
@@ -2064,7 +2028,6 @@ SlashCmdList["POTIONTRACKER"] = function(msg)
     elseif command == "clear" then
         PotionTrackerDB.buffHistory = {}
         buffHistory = {}
-        buffStates = {}  -- Clear buff state tracking
         PotionTrackerDB.exportedCSV = nil
         PotionTrackerDB.exportedDetailedCSV = nil
         Print("History cleared. Fresh data will be saved going forward.")
