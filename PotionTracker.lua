@@ -271,6 +271,7 @@ local buffHistory = {}
 local previousBuffs = {}
 local dropDown = nil  -- Move dropDown to global scope
 local optionsPanel = nil
+local unitInitialized = {} -- Track which units have been initialized
 
 UI.Minimap.shapeFallbacks = {
     ROUND = { true, true, true, true },
@@ -421,6 +422,7 @@ function UI.Minimap:InitializeMenu(frame, level, menuList)
     info.func = function()
         -- Clear both in-memory and saved data
         buffHistory = {}
+        unitInitialized = {} -- Reset initialization tracking
         PotionTrackerDB.buffHistory = {}
         PotionTrackerDB.exportedCSV = nil
         PotionTrackerDB.exportedDetailedCSV = nil
@@ -1475,50 +1477,39 @@ local function InitializeUnitBuffs(unit)
         return
     end
 
-    Debug("Checking buffs for " .. unitName)
+    Debug("Establishing baseline for " .. unitName)
 
     lastUnitUpdate[unit] = 0
+    unitInitialized[unit] = true
 
-    -- Check each tracked buff directly
+    -- Check each tracked buff and establish baseline (don't count as gains)
     for spellId, buffName in pairs(trackedBuffs) do
         local auraName = GetSpellInfo(spellId) or buffName
         Debug("Checking for buff: " .. tostring(auraName))
         local name, _, _, _, duration = AuraUtil.FindAuraByName(auraName, unit, "HELPFUL")
         if name then
-            Debug("Found tracked buff at load: " .. name)
+            Debug("Found existing buff: " .. name .. " - establishing baseline")
 
-            -- Print to chat
+            -- Print to chat (informational only, not counted)
             local timeStr = ""
             if duration and duration > 0 then
                 local minutes = math.floor(duration / 60)
                 local seconds = duration % 60
                 timeStr = string.format(" (%dm %ds)", minutes, seconds)
             end
-            Print(unitName .. " has " .. name .. timeStr)
+            Print(unitName .. " has " .. name .. timeStr .. " (baseline)")
 
-            -- Record the event immediately
-            local timestamp = time()
-            local entry = {
-                timestamp = timestamp,
-                date = date("%Y-%m-%d %H:%M:%S", timestamp),
-                unit = unitName,
-                buff = name,
-                event = "BUFF_GAINED",
-                duration = duration or 0
-            }
-
-            -- Add directly to history
-            if not buffHistory then buffHistory = {} end
-            table.insert(buffHistory, entry)
-            if not PotionTrackerDB then PotionTrackerDB = {} end
-            PotionTrackerDB.buffHistory = buffHistory
-            EnforceHistoryLimit()
-            Debug("History size after initializing buff: " .. #buffHistory)
+            -- Mark as previously lost so next gain will be counted
+            if not previousBuffs[unit] then
+                previousBuffs[unit] = {}
+            end
+            -- Don't add to previousBuffs yet - this will happen in CheckNewBuffs
         end
     end
     
-    -- Store current state for future comparisons
-    previousBuffs[unit] = GetUnitBuffs(unit)
+    -- Initialize empty previous buffs - this ensures existing buffs will be detected as "gains" 
+    -- only after they're lost and reapplied
+    previousBuffs[unit] = {}
 end
 
 -- Function to add event to history
@@ -1581,7 +1572,11 @@ local function CheckNewBuffs(unit)
     -- Check for new buffs (only tracked ones)
     for buffName, buffInfo in pairs(currentBuffs) do
         if not previousBuffs[unit][buffName] then
-            RecordBuffEvent(unitName, buffName, "BUFF_GAINED", buffInfo.duration)
+            -- Only count as gained if unit has been initialized (prevents counting existing buffs on reload)
+            -- OR if this is the first time we're seeing this unit (new player joined)
+            if unitInitialized[unit] then
+                RecordBuffEvent(unitName, buffName, "BUFF_GAINED", buffInfo.duration)
+            end
         end
     end
     
@@ -2028,6 +2023,7 @@ SlashCmdList["POTIONTRACKER"] = function(msg)
     elseif command == "clear" then
         PotionTrackerDB.buffHistory = {}
         buffHistory = {}
+        unitInitialized = {} -- Reset initialization tracking
         PotionTrackerDB.exportedCSV = nil
         PotionTrackerDB.exportedDetailedCSV = nil
         Print("History cleared. Fresh data will be saved going forward.")
